@@ -62,6 +62,18 @@ class Storage:
             data TEXT
         );
 
+        CREATE TABLE IF NOT EXISTS chat_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            meta TEXT,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_chat_messages_chat_id_created_at
+            ON chat_messages (chat_id, created_at, id);
+
         CREATE TABLE IF NOT EXISTS taro_readings (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             chat_id INTEGER NOT NULL,
@@ -185,6 +197,25 @@ class Storage:
         self._execute(
             "UPDATE tg_sessions SET state = ?, data = ? WHERE chat_id = ?",
             (session.state, self._json_dumps(session.data), session.chat_id),
+        )
+
+    def log_chat_message(
+        self,
+        chat_id: int,
+        role: str,
+        content: str,
+        *,
+        meta: dict[str, Any] | None = None,
+        created_at: datetime | None = None,
+    ) -> None:
+        payload_meta = self._json_dumps(meta or {})
+        timestamp = (created_at or datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
+        self._execute(
+            """
+            INSERT INTO chat_messages (chat_id, role, content, meta, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (chat_id, role, content, payload_meta, timestamp),
         )
 
     def count_taro_readings(self, chat_id: int, cards_count: int) -> int:

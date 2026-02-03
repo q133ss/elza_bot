@@ -4,9 +4,10 @@ from datetime import datetime, timedelta
 import calendar
 import logging
 import re
+from typing import Any
 
 from storage import Storage, TgSession, User
-from .ai_service import AIService
+from .ai_service import AIResponse, AIService
 from .tg_service import TgService
 
 
@@ -16,13 +17,40 @@ class ChatService:
         self.ai = ai
         self.storage = storage
 
+    def send_message(
+        self,
+        chat_id: int,
+        text: str,
+        keyboard: list[list[str]] | None = None,
+        *,
+        meta: dict[str, Any] | None = None,
+    ) -> None:
+        payload_meta = dict(meta or {})
+        if keyboard:
+            payload_meta.setdefault("keyboard", keyboard)
+        self.tg.send_message(chat_id, text, keyboard)
+        self.storage.log_chat_message(chat_id, "assistant", text, meta=payload_meta)
+
     def handle_update(self, update: dict) -> None:
         message = update.get("message")
         if not message:
             return
 
         chat_id = message["chat"]["id"]
-        text = (message.get("text") or "").strip()
+        raw_text = message.get("text")
+        if raw_text is None:
+            raw_text = message.get("caption") or ""
+        text = raw_text.strip()
+        self.storage.log_chat_message(
+            chat_id,
+            "user",
+            text,
+            meta={
+                "telegram_message_id": message.get("message_id"),
+                "telegram_date": message.get("date"),
+                "update_id": update.get("update_id"),
+            },
+        )
 
         session = self.storage.get_or_create_session(chat_id)
         user = self.storage.get_or_create_user(chat_id)
@@ -34,13 +62,13 @@ class ChatService:
 
             case "ask_consent":
                 if self.is_positive(text):
-                    self.tg.send_message(
+                    self.send_message(
                         chat_id,
                         "Спасибо ❤️\nПожалуйста, укажи своё имя (Напиши имя, чтобы я могла к тебе обращаться):",
                     )
                     session.state = "ask_name"
                 else:
-                    self.tg.send_message(
+                    self.send_message(
                         chat_id,
                         "Нажми «Старт», когда будешь готова начать.",
                         [["Старт"]],
@@ -48,10 +76,10 @@ class ChatService:
 
             case "ask_name":
                 if not text:
-                    self.tg.send_message(chat_id, "Пожалуйста, напиши имя (например: Анна).")
+                    self.send_message(chat_id, "Пожалуйста, напиши имя (например: Анна).")
                 else:
                     user.name = text[:100]
-                    self.tg.send_message(
+                    self.send_message(
                         chat_id,
                         f"Приятно познакомиться, {user.name}! Теперь, пожалуйста, введи дату рождения в формате ДД.MM.ГГГГ",
                     )
@@ -59,7 +87,7 @@ class ChatService:
 
             case "ask_birth_date":
                 if not self.validate_date(text):
-                    self.tg.send_message(
+                    self.send_message(
                         chat_id,
                         "Неверный формат даты. Введите, пожалуйста, в формате ДД.MM.ГГГГ (например: 08.09.1990).",
                     )
@@ -79,7 +107,7 @@ class ChatService:
 
             case "numerology_ask_surname":
                 if not text:
-                    self.tg.send_message(chat_id, "Пожалуйста, напиши фамилию.")
+                    self.send_message(chat_id, "Пожалуйста, напиши фамилию.")
                 else:
                     user.surname = text[:100]
                     self.render_numerology_menu(chat_id, user)
@@ -90,12 +118,12 @@ class ChatService:
 
             case "horoscope_ask_surname":
                 if not text:
-                    self.tg.send_message(chat_id, "Пожалуйста, напиши фамилию.")
+                    self.send_message(chat_id, "Пожалуйста, напиши фамилию.")
                 else:
                     user.surname = text[:100]
 
                     if not user.birth_time:
-                        self.tg.send_message(
+                        self.send_message(
                             chat_id,
                             "Укажи время рождения в формате ЧЧ:ММ. Если не знаешь, нажми «Не знаю».",
                             [["Не знаю"]],
@@ -111,7 +139,7 @@ class ChatService:
                     self.show_horoscope_menu(chat_id, user)
                     session.state = "horoscope_menu"
                 elif not self.validate_time(text):
-                    self.tg.send_message(
+                    self.send_message(
                         chat_id,
                         "Пожалуйста, введи время в формате ЧЧ:ММ (например: 08:30) или нажми «Не знаю».",
                         [["Не знаю"]],
@@ -148,7 +176,7 @@ class ChatService:
             "Хочешь познакомиться поближе? Жми «Старт» 💌\n\n"
             "Перед тем как продолжить, нужно согласие на обработку персональных данных (Имя, дата рождения)."
         )
-        self.tg.send_message(chat_id, text, [["Старт"]])
+        self.send_message(chat_id, text, [["Старт"]])
 
     def show_main_menu(self, chat_id: int, user: User) -> None:
         name = user.name if user.name else "Подруга"
@@ -161,12 +189,12 @@ class ChatService:
             ["♒ Гороскоп", "💬 Подружка"],
             ["💎 Подписка", "ℹ️ Помощь"],
         ]
-        self.tg.send_message(chat_id, text, keyboard)
+        self.send_message(chat_id, text, keyboard)
 
     def route_main_menu(self, session: TgSession, user: User, chat_id: int, text: str) -> None:
         match text:
             case "🃏 Расклад Таро":
-                self.tg.send_message(
+                self.send_message(
                     chat_id,
                     "Выбери тип расклада:",
                     [
@@ -178,7 +206,7 @@ class ChatService:
 
             case "🔢 Нумерология":
                 if not user.surname:
-                    self.tg.send_message(chat_id, "Пожалуйста, укажи свою фамилию:")
+                    self.send_message(chat_id, "Пожалуйста, укажи свою фамилию:")
                     session.state = "numerology_ask_surname"
                 else:
                     self.render_numerology_menu(chat_id, user)
@@ -186,10 +214,10 @@ class ChatService:
 
             case "♒ Гороскоп":
                 if not user.surname:
-                    self.tg.send_message(chat_id, "Пожалуйста, укажи свою фамилию:")
+                    self.send_message(chat_id, "Пожалуйста, укажи свою фамилию:")
                     session.state = "horoscope_ask_surname"
                 elif not user.birth_time:
-                    self.tg.send_message(
+                    self.send_message(
                         chat_id,
                         "Укажи время рождения в формате ЧЧ:ММ. Если не знаешь, нажми «Не знаю».",
                         [["Не знаю"]],
@@ -201,14 +229,14 @@ class ChatService:
 
             case "💬 Подружка":
                 if user.subscription != "paid" and user.podruzhka_free_used_at:
-                    self.tg.send_message(
+                    self.send_message(
                         chat_id,
                         "Бесплатный совет уже получен. Чтобы продолжить беседу без ограничений, оформи подписку 💗",
                         [["Получить доступ", "Назад в меню"]],
                     )
                     return
 
-                self.tg.send_message(
+                self.send_message(
                     chat_id,
                     "Привет, я твоя Подружка. Можешь рассказать мне всё, что у тебя на душе. Я рядом, выслушаю, пойму",
                     [["Закончить разговор"]],
@@ -221,7 +249,7 @@ class ChatService:
                 session.state = "subscription_menu"
 
             case "ℹ️ Помощь":
-                self.tg.send_message(
+                self.send_message(
                     chat_id,
                     "Я помогу:\n• Сформулировать вопрос к Таро\n• Сделать базовый расклад (3 карты бесплатно) или глубокий расклад (7 карт для подписчиков)\n\n"
                     "Просто выбери «🃏 Расклад Таро» и следуй подсказкам.",
@@ -247,7 +275,7 @@ class ChatService:
             "❌ Не: «Что меня ждет с ним?» — слишком общее.\n\n"
             "Напиши свой вопрос или нажми «Другой вопрос» для свободного ввода."
         )
-        self.tg.send_message(
+        self.send_message(
             chat_id,
             suggest,
             [["Задать вопрос"], ["Назад в меню"]],
@@ -266,7 +294,7 @@ class ChatService:
         if user.subscription != "paid":
             free_count = self.storage.count_taro_readings(chat_id=user.chat_id, cards_count=3)
             if free_count >= 1:
-                self.tg.send_message(
+                self.send_message(
                     chat_id,
                     "Бесплатный расклад уже был использован. 🌸\n\n"
                     "Чтобы делать больше раскладов и получать рекомендации, подключи подписку.",
@@ -283,7 +311,7 @@ class ChatService:
                 date_value=today,
             )
             if paid_used_today >= 10:
-                self.tg.send_message(
+                self.send_message(
                     chat_id,
                     "Ты использовала все 10 платных раскладов на сегодня 🌸\n\n"
                     "Завтра сможешь продолжить или обратись к поддержке, если нужна расширенная сессия.",
@@ -295,14 +323,17 @@ class ChatService:
         type_value = session.data.get("taro_type", "Расклад")
         prompt = self.build_taro_prompt(user.name or "Подруга", type_value, text, cards)
 
-        self.tg.send_message(
+        self.send_message(
             chat_id,
             "Сейчас я посоветуюсь с картами и соберу расклад — это займёт пару секунд ✨",
         )
 
-        result = self.ask_ai(prompt)
-        if not result:
+        ai_response = self.ask_ai(prompt)
+        ai_meta = self._ai_meta(ai_response)
+        if not ai_response:
             result = "К сожалению, сейчас я не могу подготовить расклад. Но не переживай — мы вернёмся к этому чуть позже."
+        else:
+            result = ai_response.content
 
         if len(result) > 4000:
             result = result[:4000] + "..."
@@ -326,27 +357,28 @@ class ChatService:
             meta={
                 "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "prompt": self.shorten(prompt, 800),
+                **ai_meta,
             },
         )
 
         if user.subscription == "paid":
-            self.tg.send_message(chat_id, final, [["Задать ещё вопрос", "Назад в меню"]])
+            self.send_message(chat_id, final, [["Задать ещё вопрос", "Назад в меню"]], meta=ai_meta)
             session.state = "taro_menu"
         else:
             final += "\n\nСпасибо, что доверилась. Если хочешь получать больше раскладов и персональные рекомендации — подключи подписку 💎"
-            self.tg.send_message(chat_id, final, [["Получить доступ", "Назад в меню"]])
+            self.send_message(chat_id, final, [["Получить доступ", "Назад в меню"]], meta=ai_meta)
             self.schedule_retention(user)
             session.state = "main_menu"
 
     def render_numerology_menu(self, chat_id: int, user: User) -> None:
         text = "Выбери формат нумерологического разбора:"
         keyboard = [["Бесплатно", "Полный анализ"], ["Назад в меню"]]
-        self.tg.send_message(chat_id, text, keyboard)
+        self.send_message(chat_id, text, keyboard)
 
     def show_horoscope_menu(self, chat_id: int, user: User) -> None:
         text = "Выбери формат гороскопа:"
         keyboard = [["Бесплатно", "Полный гороскоп"], ["Назад в меню"]]
-        self.tg.send_message(chat_id, text, keyboard)
+        self.send_message(chat_id, text, keyboard)
 
     def route_numerology_menu(self, session: TgSession, user: User, chat_id: int, text: str) -> None:
         match text:
@@ -374,7 +406,7 @@ class ChatService:
 
     def handle_podruzhka_free(self, session: TgSession, user: User, chat_id: int, text: str) -> None:
         if text == "Закончить разговор":
-            self.tg.send_message(
+            self.send_message(
                 chat_id,
                 "Спасибо, что доверилась мне. Помни: ты ценная и важная. Я всегда рядом, когда захочешь поговорить.",
             )
@@ -383,16 +415,17 @@ class ChatService:
             return
 
         if self.is_distress_message(text):
-            self.tg.send_message(
+            self.send_message(
                 chat_id,
                 "Если тебе очень тяжело, пожалуйста, обратись к специалисту. Я рядом, но живой человек — лучшее решение в таких ситуациях.",
                 [["Закончить разговор"]],
             )
             return
 
-        reply = self.ask_ai(text, self.build_podruzhka_system_prompt())
-        if not reply:
-            self.tg.send_message(
+        ai_response = self.ask_ai(text, self.build_podruzhka_system_prompt())
+        ai_meta = self._ai_meta(ai_response)
+        if not ai_response:
+            self.send_message(
                 chat_id,
                 "Сейчас не получается ответить. Попробуй ещё раз чуть позже.",
                 [["Назад в меню"]],
@@ -400,6 +433,7 @@ class ChatService:
             session.state = "main_menu"
             return
 
+        reply = ai_response.content
         if len(reply) > 300:
             reply = reply[:300] + "..."
 
@@ -409,14 +443,14 @@ class ChatService:
             + "Если хочешь продолжать беседу без ограничений и получать упражнения и поддержку в любой момент — подключи подписку."
         )
 
-        self.tg.send_message(chat_id, final, [["Получить доступ", "Назад в меню"]])
+        self.send_message(chat_id, final, [["Получить доступ", "Назад в меню"]], meta=ai_meta)
         user.podruzhka_free_used_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self.schedule_retention(user)
         session.state = "main_menu"
 
     def handle_podruzhka_chat(self, session: TgSession, user: User, chat_id: int, text: str) -> None:
         if text == "Закончить разговор":
-            self.tg.send_message(
+            self.send_message(
                 chat_id,
                 "Спасибо, что доверилась мне. Помни: ты ценная и важная. Я всегда рядом, когда захочешь поговорить.",
             )
@@ -425,16 +459,17 @@ class ChatService:
             return
 
         if self.is_distress_message(text):
-            self.tg.send_message(
+            self.send_message(
                 chat_id,
                 "Если тебе очень тяжело, пожалуйста, обратись к специалисту. Я рядом, но живой человек — лучшее решение в таких ситуациях.",
                 [["Закончить разговор"]],
             )
             return
 
-        reply = self.ask_ai(text, self.build_podruzhka_system_prompt())
-        if not reply:
-            self.tg.send_message(
+        ai_response = self.ask_ai(text, self.build_podruzhka_system_prompt())
+        ai_meta = self._ai_meta(ai_response)
+        if not ai_response:
+            self.send_message(
                 chat_id,
                 "Сейчас не получается ответить. Давай попробуем позже.",
                 [["Закончить разговор"]],
@@ -442,17 +477,18 @@ class ChatService:
             session.state = "podruzhka_chat"
             return
 
+        reply = ai_response.content
         if len(reply) > 4000:
             reply = reply[:4000] + "..."
 
-        self.tg.send_message(chat_id, reply, [["Закончить разговор"]])
+        self.send_message(chat_id, reply, [["Закончить разговор"]], meta=ai_meta)
         session.state = "podruzhka_chat"
 
     def handle_numerology_free(self, session: TgSession, user: User, chat_id: int) -> None:
         if user.subscription != "paid":
             used = self.storage.numerology_exists(chat_id=user.chat_id, type_value="money_code")
             if used:
-                self.tg.send_message(
+                self.send_message(
                     chat_id,
                     "Бесплатный расчёт уже доступен только один раз. Чтобы получить полный разбор, оформи подписку.",
                     [["Получить доступ", "Назад в меню"]],
@@ -461,11 +497,14 @@ class ChatService:
                 return
 
         prompt = self.build_money_code_prompt(user.name or "", user.birth_date)
-        self.tg.send_message(chat_id, "Считаю твой денежный код, подожди пару секунд ✨")
-        result = self.ask_ai(prompt)
+        self.send_message(chat_id, "Считаю твой денежный код, подожди пару секунд ✨")
+        ai_response = self.ask_ai(prompt)
+        ai_meta = self._ai_meta(ai_response)
 
-        if not result:
+        if not ai_response:
             result = "Сейчас не получается рассчитать код. Попробуй ещё раз позже."
+        else:
+            result = ai_response.content
 
         if len(result) > 4000:
             result = result[:4000] + "..."
@@ -476,7 +515,7 @@ class ChatService:
             + "Спасибо, что попробовала! Если хочешь узнать свои сильные стороны, кармические задачи и код активации изобилия, подключи подписку и получи расширенный нумерологический портрет. ✨"
         )
 
-        self.tg.send_message(chat_id, final, [["Получить доступ", "Назад в меню"]])
+        self.send_message(chat_id, final, [["Получить доступ", "Назад в меню"]], meta=ai_meta)
         self.schedule_retention(user)
 
         self.storage.create_numerology_reading(
@@ -489,13 +528,14 @@ class ChatService:
             meta={
                 "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "prompt": self.shorten(prompt, 800),
+                **ai_meta,
             },
         )
         session.state = "main_menu"
 
     def handle_numerology_paid(self, session: TgSession, user: User, chat_id: int) -> None:
         if user.subscription != "paid":
-            self.tg.send_message(
+            self.send_message(
                 chat_id,
                 "Подробный нумерологический анализ доступен по подписке.",
                 [["Получить доступ", "Назад в меню"]],
@@ -509,19 +549,22 @@ class ChatService:
             else ""
         )
         prompt = self.build_numerology_prompt(user.name or "", user.surname or "", birth)
-        self.tg.send_message(
+        self.send_message(
             chat_id,
             "Собираю твою нумерологическую карту, подожди чуть-чуть ✨",
         )
-        result = self.ask_ai(prompt)
+        ai_response = self.ask_ai(prompt)
+        ai_meta = self._ai_meta(ai_response)
 
-        if not result:
+        if not ai_response:
             result = "Сейчас не получается подготовить анализ. Попробуй позже."
+        else:
+            result = ai_response.content
 
         if len(result) > 4000:
             result = result[:4000] + "..."
 
-        self.tg.send_message(chat_id, result, [["Задать вопрос", "Назад в меню"]])
+        self.send_message(chat_id, result, [["Задать вопрос", "Назад в меню"]], meta=ai_meta)
 
         self.storage.create_numerology_reading(
             chat_id=user.chat_id,
@@ -533,6 +576,7 @@ class ChatService:
             meta={
                 "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "prompt": self.shorten(prompt, 800),
+                **ai_meta,
             },
         )
 
@@ -542,7 +586,7 @@ class ChatService:
         if user.subscription != "paid":
             used = self.storage.horoscope_exists(chat_id=user.chat_id, type_value="daily")
             if used:
-                self.tg.send_message(
+                self.send_message(
                     chat_id,
                     "Ты уже получила краткий гороскоп. Чтобы узнать больше и получить полный прогноз, подключи подписку 🌌",
                     [["Получить доступ", "Назад в меню"]],
@@ -552,11 +596,14 @@ class ChatService:
 
         sign = self.get_zodiac_sign(user.birth_date)
         prompt = self.build_horoscope_free_prompt(sign)
-        self.tg.send_message(chat_id, "Смотрю твою астрологическую волну, подожди пару секунд ✨")
-        result = self.ask_ai(prompt)
+        self.send_message(chat_id, "Смотрю твою астрологическую волну, подожди пару секунд ✨")
+        ai_response = self.ask_ai(prompt)
+        ai_meta = self._ai_meta(ai_response)
 
-        if not result:
+        if not ai_response:
             result = "Сейчас не получается построить гороскоп. Попробуй позже."
+        else:
+            result = ai_response.content
 
         if len(result) > 4000:
             result = result[:4000] + "..."
@@ -568,7 +615,7 @@ class ChatService:
             "Спасибо, что заглянула! Полный гороскоп по всем сферам жизни доступен по подписке: любовь, деньги, самореализация. 🌌"
         )
 
-        self.tg.send_message(chat_id, final, [["Получить доступ", "Назад в меню"]])
+        self.send_message(chat_id, final, [["Получить доступ", "Назад в меню"]], meta=ai_meta)
         self.schedule_retention(user)
 
         self.storage.create_horoscope_reading(
@@ -583,6 +630,7 @@ class ChatService:
             meta={
                 "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "prompt": self.shorten(prompt, 800),
+                **ai_meta,
             },
         )
 
@@ -590,7 +638,7 @@ class ChatService:
 
     def handle_horoscope_paid(self, session: TgSession, user: User, chat_id: int) -> None:
         if user.subscription != "paid":
-            self.tg.send_message(
+            self.send_message(
                 chat_id,
                 "Полный гороскоп доступен по подписке.",
                 [["Получить доступ", "Назад в меню"]],
@@ -609,19 +657,22 @@ class ChatService:
             else "неизвестно"
         )
         prompt = self.build_horoscope_prompt(user.name or "", user.surname or "", birth, time_value)
-        self.tg.send_message(
+        self.send_message(
             chat_id,
             "Готовлю твой подробный гороскоп, подожди немного ✨",
         )
-        result = self.ask_ai(prompt)
+        ai_response = self.ask_ai(prompt)
+        ai_meta = self._ai_meta(ai_response)
 
-        if not result:
+        if not ai_response:
             result = "Сейчас не получается подготовить гороскоп. Попробуй позже."
+        else:
+            result = ai_response.content
 
         if len(result) > 4000:
             result = result[:4000] + "..."
 
-        self.tg.send_message(chat_id, result, [["Назад в меню"]])
+        self.send_message(chat_id, result, [["Назад в меню"]], meta=ai_meta)
 
         self.storage.create_horoscope_reading(
             chat_id=user.chat_id,
@@ -635,6 +686,7 @@ class ChatService:
             meta={
                 "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "prompt": self.shorten(prompt, 800),
+                **ai_meta,
             },
         )
 
@@ -756,7 +808,7 @@ class ChatService:
     def show_subscription_menu(self, chat_id: int) -> None:
         text = "Выбери тариф подписки:"
         keyboard = [["1 месяц", "6 месяцев (-10%)"], ["12 месяцев (-10%)", "Назад в меню"]]
-        self.tg.send_message(chat_id, text, keyboard)
+        self.send_message(chat_id, text, keyboard)
 
     def route_subscription_menu(self, session: TgSession, user: User, chat_id: int, text: str) -> None:
         now = datetime.now()
@@ -764,19 +816,19 @@ class ChatService:
             case "1 месяц":
                 user.subscription = "paid"
                 user.subscription_expires_at = self._add_months(now, 1).strftime("%Y-%m-%d %H:%M:%S")
-                self.tg.send_message(chat_id, "Подписка активирована на 1 месяц 💎")
+                self.send_message(chat_id, "Подписка активирована на 1 месяц 💎")
                 self.show_main_menu(chat_id, user)
                 session.state = "main_menu"
             case "6 месяцев (-10%)":
                 user.subscription = "paid"
                 user.subscription_expires_at = self._add_months(now, 6).strftime("%Y-%m-%d %H:%M:%S")
-                self.tg.send_message(chat_id, "Подписка активирована на 6 месяцев 💎")
+                self.send_message(chat_id, "Подписка активирована на 6 месяцев 💎")
                 self.show_main_menu(chat_id, user)
                 session.state = "main_menu"
             case "12 месяцев (-10%)":
                 user.subscription = "paid"
                 user.subscription_expires_at = self._add_months(now, 12).strftime("%Y-%m-%d %H:%M:%S")
-                self.tg.send_message(chat_id, "Подписка активирована на 12 месяцев 💎")
+                self.send_message(chat_id, "Подписка активирована на 12 месяцев 💎")
                 self.show_main_menu(chat_id, user)
                 session.state = "main_menu"
             case "Назад в меню":
@@ -808,12 +860,25 @@ class ChatService:
         for send_at, message in messages:
             self.storage.create_reminder(user.chat_id, message, send_at)
 
-    def ask_ai(self, prompt: str, system: str | None = None) -> str | None:
+    def ask_ai(self, prompt: str, system: str | None = None) -> AIResponse | None:
         try:
             return self.ai.get_answer(prompt, system)
         except Exception as exc:
             logging.warning("AI error: %s", exc)
             return None
+
+    @staticmethod
+    def _ai_meta(response: AIResponse | None) -> dict[str, Any]:
+        if not response:
+            return {}
+        meta: dict[str, Any] = {}
+        if response.usage:
+            meta["usage"] = response.usage
+        if response.model:
+            meta["model"] = response.model
+        if meta:
+            meta.setdefault("source", "openai")
+        return meta
 
     @staticmethod
     def _add_months(value: datetime, months: int) -> datetime:

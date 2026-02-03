@@ -32,6 +32,12 @@ def _send_due_reminders(storage: Storage, tg: TgService) -> None:
     now = datetime.now()
     for reminder in storage.get_due_reminders(now):
         tg.send_message(reminder.chat_id, reminder.message)
+        storage.log_chat_message(
+            reminder.chat_id,
+            "assistant",
+            reminder.message,
+            meta={"source": "reminder", "reminder_id": reminder.id},
+        )
         storage.mark_reminder_sent(reminder.id)
 
 

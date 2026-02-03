@@ -1,9 +1,17 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import logging
 from typing import Any
 
 import requests
+
+
+@dataclass(frozen=True)
+class AIResponse:
+    content: str
+    usage: dict[str, int] | None
+    model: str | None
 
 
 class AIService:
@@ -24,7 +32,7 @@ class AIService:
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
 
-    def get_answer(self, message: str, system_message: str | None = None) -> str:
+    def get_answer(self, message: str, system_message: str | None = None) -> AIResponse:
         messages: list[dict[str, Any]] = []
 
         if system_message:
@@ -65,11 +73,17 @@ class AIService:
         logging.info("OpenAI response: %s", data)
 
         try:
-            return data["choices"][0]["message"]["content"].strip()
+            content = data["choices"][0]["message"]["content"].strip()
         except (KeyError, IndexError, AttributeError) as exc:
             raise RuntimeError("Empty response from OpenAI") from exc
 
-    def chat_with_context(self, messages: list[dict[str, str]]) -> str:
+        return AIResponse(
+            content=content,
+            usage=self._extract_usage(data),
+            model=data.get("model") or self._model,
+        )
+
+    def chat_with_context(self, messages: list[dict[str, str]]) -> AIResponse:
         payload = {
             "model": self._model,
             "messages": messages,
@@ -92,7 +106,28 @@ class AIService:
 
             logging.info("OpenAI response: %s", data)
 
-            return data["choices"][0]["message"]["content"].strip()
+            content = data["choices"][0]["message"]["content"].strip()
+            return AIResponse(
+                content=content,
+                usage=self._extract_usage(data),
+                model=data.get("model") or self._model,
+            )
         except Exception as exc:
             logging.warning("OpenAI API error: %s", exc)
-            return "Сейчас мне сложно поддержать диалог, попробуй чуть позже."
+            return AIResponse(
+                content="Сейчас мне сложно поддержать диалог, попробуй чуть позже.",
+                usage=None,
+                model=self._model,
+            )
+
+    @staticmethod
+    def _extract_usage(data: dict[str, Any]) -> dict[str, int] | None:
+        usage_raw = data.get("usage")
+        if not isinstance(usage_raw, dict):
+            return None
+        usage: dict[str, int] = {}
+        for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+            value = usage_raw.get(key)
+            if isinstance(value, (int, float)):
+                usage[key] = int(value)
+        return usage or None
