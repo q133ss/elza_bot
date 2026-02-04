@@ -18,6 +18,7 @@ class User:
     subscription: str | None = None
     subscription_expires_at: str | None = None
     podruzhka_free_used_at: str | None = None
+    retention_message_sent_at: str | None = None
 
 
 @dataclass
@@ -66,7 +67,8 @@ class Storage:
             birth_time TEXT,
             subscription TEXT,
             subscription_expires_at TEXT,
-            podruzhka_free_used_at TEXT
+            podruzhka_free_used_at TEXT,
+            retention_message_sent_at TEXT
         );
 
         CREATE TABLE IF NOT EXISTS tg_sessions (
@@ -157,7 +159,13 @@ class Storage:
         with self._lock:
             self._conn.executescript(schema)
             self._conn.commit()
+        self._ensure_user_columns()
         self._ensure_default_settings()
+
+    def _ensure_user_columns(self) -> None:
+        columns = {row["name"] for row in self._query_all("PRAGMA table_info(users)")}
+        if "retention_message_sent_at" not in columns:
+            self._execute("ALTER TABLE users ADD COLUMN retention_message_sent_at TEXT")
 
     def _ensure_default_settings(self) -> None:
         if self.get_setting("subscription_price_rub") is None:
@@ -235,7 +243,8 @@ class Storage:
             """
             UPDATE users
             SET name = ?, surname = ?, birth_date = ?, birth_time = ?,
-                subscription = ?, subscription_expires_at = ?, podruzhka_free_used_at = ?
+                subscription = ?, subscription_expires_at = ?, podruzhka_free_used_at = ?,
+                retention_message_sent_at = ?
             WHERE chat_id = ?
             """,
             (
@@ -246,6 +255,7 @@ class Storage:
                 user.subscription,
                 user.subscription_expires_at,
                 user.podruzhka_free_used_at,
+                user.retention_message_sent_at,
                 user.chat_id,
             ),
         )
@@ -721,6 +731,7 @@ class Storage:
             subscription=row["subscription"],
             subscription_expires_at=row["subscription_expires_at"],
             podruzhka_free_used_at=row["podruzhka_free_used_at"],
+            retention_message_sent_at=row["retention_message_sent_at"],
         )
 
     def _row_to_session(self, row: sqlite3.Row) -> TgSession:

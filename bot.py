@@ -40,6 +40,12 @@ def _send_due_reminders(storage: Storage, tg: TgService, chat: ChatService) -> N
             storage.mark_reminder_sent(reminder.id)
             continue
 
+        if reminder.message in ChatService.RETENTION_MESSAGES:
+            user = storage.get_or_create_user(reminder.chat_id)
+            if user.subscription == "paid" or user.retention_message_sent_at:
+                storage.mark_reminder_sent(reminder.id)
+                continue
+
         tg.send_message(reminder.chat_id, reminder.message)
         storage.log_chat_message(
             reminder.chat_id,
@@ -47,6 +53,10 @@ def _send_due_reminders(storage: Storage, tg: TgService, chat: ChatService) -> N
             reminder.message,
             meta={"source": "reminder", "reminder_id": reminder.id},
         )
+        if reminder.message in ChatService.RETENTION_MESSAGES:
+            user = storage.get_or_create_user(reminder.chat_id)
+            user.retention_message_sent_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            storage.save_user(user)
         storage.mark_reminder_sent(reminder.id)
 
 
