@@ -544,6 +544,20 @@ class ChatService:
                 )
                 session.state = "main_menu"
                 return
+        else:
+            today = datetime.now().strftime("%Y-%m-%d")
+            paid_used_today = self.storage.count_numerology_readings_for_date(
+                chat_id=user.chat_id,
+                date_value=today,
+            )
+            if paid_used_today >= 10:
+                self.send_message(
+                    chat_id,
+                    "Ты использовала все 10 нумерологических разборов на сегодня. Попробуй завтра.",
+                    [["Назад в меню"]],
+                )
+                session.state = "main_menu"
+                return
 
         prompt = self.build_money_code_prompt(user.name or "", user.birth_date)
         self.send_message(chat_id, "Считаю твой денежный код, подожди пару секунд ✨")
@@ -588,6 +602,20 @@ class ChatService:
                 chat_id,
                 "Подробный нумерологический анализ доступен по подписке.",
                 [["Получить доступ", "Назад в меню"]],
+            )
+            session.state = "numerology_menu"
+            return
+
+        today = datetime.now().strftime("%Y-%m-%d")
+        paid_used_today = self.storage.count_numerology_readings_for_date(
+            chat_id=user.chat_id,
+            date_value=today,
+        )
+        if paid_used_today >= 10:
+            self.send_message(
+                chat_id,
+                "Ты использовала все 10 нумерологических разборов на сегодня. Попробуй завтра.",
+                [["Назад в меню"]],
             )
             session.state = "numerology_menu"
             return
@@ -642,6 +670,20 @@ class ChatService:
                 )
                 session.state = "main_menu"
                 return
+        else:
+            today = datetime.now().strftime("%Y-%m-%d")
+            paid_used_today = self.storage.count_horoscope_readings_for_date(
+                chat_id=user.chat_id,
+                date_value=today,
+            )
+            if paid_used_today >= 10:
+                self.send_message(
+                    chat_id,
+                    "Ты использовала все 10 гороскопов на сегодня. Попробуй завтра.",
+                    [["Назад в меню"]],
+                )
+                session.state = "main_menu"
+                return
 
         sign = self.get_zodiac_sign(user.birth_date)
         prompt = self.build_horoscope_free_prompt(sign)
@@ -691,6 +733,20 @@ class ChatService:
                 chat_id,
                 "Полный гороскоп доступен по подписке.",
                 [["Получить доступ", "Назад в меню"]],
+            )
+            session.state = "horoscope_menu"
+            return
+
+        today = datetime.now().strftime("%Y-%m-%d")
+        paid_used_today = self.storage.count_horoscope_readings_for_date(
+            chat_id=user.chat_id,
+            date_value=today,
+        )
+        if paid_used_today >= 10:
+            self.send_message(
+                chat_id,
+                "Ты использовала все 10 гороскопов на сегодня. Попробуй завтра.",
+                [["Назад в меню"]],
             )
             session.state = "horoscope_menu"
             return
