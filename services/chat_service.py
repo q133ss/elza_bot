@@ -13,6 +13,29 @@ from .payment_service import PaymentService
 
 
 class ChatService:
+    _SYSTEM_COMMANDS = {
+        "🃏 Расклад Таро",
+        "🔢 Нумерология",
+        "♒ Гороскоп",
+        "💬 Подружка",
+        "💎 Подписка",
+        "№️ Помощь",
+        "Таро на день",
+        "Таро на любовь",
+        "Другой вопрос",
+        "Назад в меню",
+        "Задать вопрос",
+        "Получить доступ",
+        "Закончить разговор",
+        "Проверить оплату",
+        "1 месяц",
+        "6 месяцев (-10%)",
+        "12 месяцев (-10%)",
+        "Не знаю",
+        "Старт",
+    }
+    _SURNAME_RE = re.compile(r"^[A-Za-zА-Яа-яЁё\\-\\s']{2,100}$")
+
     def __init__(self, tg: TgService, ai: AIService, storage: Storage, payments: PaymentService) -> None:
         self.tg = tg
         self.ai = ai
@@ -111,9 +134,19 @@ class ChatService:
                 if not text:
                     self.send_message(chat_id, "Пожалуйста, напиши фамилию.")
                 else:
-                    user.surname = text[:100]
-                    self.render_numerology_menu(chat_id, user)
-                    session.state = "numerology_menu"
+                    surname = self._normalize_name(text)
+                    if self._is_system_command(surname):
+                        self.show_main_menu(chat_id, user)
+                        session.state = "main_menu"
+                    elif not self._validate_surname(surname):
+                        self.send_message(
+                            chat_id,
+                            "Пожалуйста, напиши фамилию только буквами (без эмодзи и команд).",
+                        )
+                    else:
+                        user.surname = surname[:100]
+                        self.render_numerology_menu(chat_id, user)
+                        session.state = "numerology_menu"
 
             case "numerology_menu":
                 self.route_numerology_menu(session, user, chat_id, text)
@@ -122,18 +155,28 @@ class ChatService:
                 if not text:
                     self.send_message(chat_id, "Пожалуйста, напиши фамилию.")
                 else:
-                    user.surname = text[:100]
-
-                    if not user.birth_time:
+                    surname = self._normalize_name(text)
+                    if self._is_system_command(surname):
+                        self.show_main_menu(chat_id, user)
+                        session.state = "main_menu"
+                    elif not self._validate_surname(surname):
                         self.send_message(
                             chat_id,
-                            "Укажи время рождения в формате ЧЧ:ММ. Если не знаешь, нажми «Не знаю».",
-                            [["Не знаю"]],
+                            "Пожалуйста, напиши фамилию только буквами (без эмодзи и команд).",
                         )
-                        session.state = "horoscope_ask_birth_time"
                     else:
-                        self.show_horoscope_menu(chat_id, user)
-                        session.state = "horoscope_menu"
+                        user.surname = surname[:100]
+
+                        if not user.birth_time:
+                            self.send_message(
+                                chat_id,
+                                "Укажи время рождения в формате ЧЧ:ММ. Если не знаешь, нажми «Не знаю».",
+                                [["Не знаю"]],
+                            )
+                            session.state = "horoscope_ask_birth_time"
+                        else:
+                            self.show_horoscope_menu(chat_id, user)
+                            session.state = "horoscope_menu"
 
             case "horoscope_ask_birth_time":
                 if text == "Не знаю":
@@ -809,6 +852,18 @@ class ChatService:
 
     def shorten(self, text: str, limit: int = 200) -> str:
         return text if len(text) <= limit else f"{text[:limit]}..."
+
+    @staticmethod
+    def _normalize_name(text: str) -> str:
+        return " ".join(text.split()).strip()
+
+    def _is_system_command(self, text: str) -> bool:
+        return text in self._SYSTEM_COMMANDS
+
+    def _validate_surname(self, text: str) -> bool:
+        if not text or self._is_system_command(text):
+            return False
+        return bool(self._SURNAME_RE.fullmatch(text))
 
     @staticmethod
     def _format_rub(amount: int) -> str:
