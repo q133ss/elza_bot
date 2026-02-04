@@ -36,6 +36,9 @@ class ChatService:
         "Старт",
     }
     _SURNAME_RE = re.compile(r"^[A-Za-zА-Яа-яЁё\\-\\s']{2,100}$")
+    PODRUZHKA_DAILY_LIMIT = 30
+    PODRUZHKA_MAX_INPUT_CHARS = 1000
+    PODRUZHKA_MAX_REPLY_CHARS = 1200
 
     def __init__(self, tg: TgService, ai: AIService, storage: Storage, payments: PaymentService) -> None:
         self.tg = tg
@@ -301,6 +304,7 @@ class ChatService:
                 self.send_message(
                     chat_id,
                     "Я помогу:\n• Сформулировать вопрос к Таро\n• Сделать базовый расклад (3 карты бесплатно) или глубокий расклад (7 карт для подписчиков)\n\n"
+                    f"{self._subscription_benefits_text()}\n\n"
                     "Просто выбери «🃏 Расклад Таро» и следуй подсказкам.",
                 )
 
@@ -392,7 +396,8 @@ class ChatService:
             f"<b>Вопрос:</b> {text}\n\n"
             f"<b>Расклад ({cards} карты):</b>\n"
             f"{result}\n\n"
-            "Спасибо, что открываешься — если хочешь ещё углубиться, рассмотрим платную версию (7 карт и персональные рекомендации)."
+            "Спасибо, что открываешься — если хочешь ещё углубиться, рассмотрим платную версию (7 карт и персональные рекомендации).\n\n"
+            f"{self._subscription_benefits_text()}"
         )
 
         self.storage.create_taro_reading(
@@ -471,7 +476,8 @@ class ChatService:
             )
             return
 
-        ai_response = self.ask_ai(text, self.build_podruzhka_system_prompt())
+        safe_text = text[: self.PODRUZHKA_MAX_INPUT_CHARS]
+        ai_response = self.ask_ai(safe_text, self.build_podruzhka_system_prompt())
         ai_meta = self._ai_meta(ai_response)
         if not ai_response:
             self.send_message(
@@ -489,10 +495,16 @@ class ChatService:
         final = (
             reply
             + "\n\nСпасибо, что написала. Я рядом, даже когда трудно. 💗\n"
-            + "Если хочешь продолжать беседу без ограничений и получать упражнения и поддержку в любой момент — подключи подписку."
+            + "Если хочешь продолжать беседу без ограничений и получать упражнения и поддержку в любой момент — подключи подписку.\n\n"
+            + f"{self._subscription_benefits_text()}"
         )
 
-        self.send_message(chat_id, final, [["Получить доступ", "Назад в меню"]], meta=ai_meta)
+        self.send_message(
+            chat_id,
+            final,
+            [["Получить доступ", "Назад в меню"]],
+            meta=self._podruzhka_meta(ai_meta),
+        )
         user.podruzhka_free_used_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self.schedule_retention(user)
         session.state = "main_menu"
@@ -515,7 +527,23 @@ class ChatService:
             )
             return
 
-        ai_response = self.ask_ai(text, self.build_podruzhka_system_prompt())
+        today = datetime.now().strftime("%Y-%m-%d")
+        used_today = self.storage.count_podruzhka_replies_for_date(
+            chat_id=user.chat_id,
+            date_value=today,
+        )
+        if used_today >= self.PODRUZHKA_DAILY_LIMIT:
+            self.send_message(
+                chat_id,
+                "На сегодня лимит сообщений в Подружке исчерпан. Давай продолжим завтра.",
+                [["Назад в меню"]],
+            )
+            self.show_main_menu(chat_id, user)
+            session.state = "main_menu"
+            return
+
+        safe_text = text[: self.PODRUZHKA_MAX_INPUT_CHARS]
+        ai_response = self.ask_ai(safe_text, self.build_podruzhka_system_prompt())
         ai_meta = self._ai_meta(ai_response)
         if not ai_response:
             self.send_message(
@@ -527,10 +555,15 @@ class ChatService:
             return
 
         reply = ai_response.content
-        if len(reply) > 4000:
-            reply = reply[:4000] + "..."
+        if len(reply) > self.PODRUZHKA_MAX_REPLY_CHARS:
+            reply = reply[: self.PODRUZHKA_MAX_REPLY_CHARS] + "..."
 
-        self.send_message(chat_id, reply, [["Закончить разговор"]], meta=ai_meta)
+        self.send_message(
+            chat_id,
+            reply,
+            [["Закончить разговор"]],
+            meta=self._podruzhka_meta(ai_meta),
+        )
         session.state = "podruzhka_chat"
 
     def handle_numerology_free(self, session: TgSession, user: User, chat_id: int) -> None:
@@ -575,7 +608,8 @@ class ChatService:
         final = (
             result
             + "\n\nЭто твой денежный код. Он помогает понять, как ты взаимодействуешь с финансовыми потоками. 💸\n"
-            + "Спасибо, что попробовала! Если хочешь узнать свои сильные стороны, кармические задачи и код активации изобилия, подключи подписку и получи расширенный нумерологический портрет. ✨"
+            + "Спасибо, что попробовала! Если хочешь узнать свои сильные стороны, кармические задачи и код активации изобилия, подключи подписку и получи расширенный нумерологический портрет. ✨\n\n"
+            + f"{self._subscription_benefits_text()}"
         )
 
         self.send_message(chat_id, final, [["Получить доступ", "Назад в меню"]], meta=ai_meta)
@@ -703,7 +737,8 @@ class ChatService:
             f"Твой знак — {sign}.\n"
             f"{result}\n\n"
             "Это краткий взгляд на твою текущую астрологическую волну.\n"
-            "Спасибо, что заглянула! Полный гороскоп по всем сферам жизни доступен по подписке: любовь, деньги, самореализация. 🌌"
+            "Спасибо, что заглянула! Полный гороскоп по всем сферам жизни доступен по подписке: любовь, деньги, самореализация. 🌌\n\n"
+            f"{self._subscription_benefits_text()}"
         )
 
         self.send_message(chat_id, final, [["Получить доступ", "Назад в меню"]], meta=ai_meta)
@@ -820,7 +855,8 @@ class ChatService:
         return (
             "Ты — добрая, понимающая, внимательная подруга. Твоя задача — поддерживать, выслушивать, "
             "помогать словами и мягко направлять, если нужно. Никакой оценки. Ты можешь говорить с юмором, "
-            "тепло, но всегда с уважением. Избегай клише и сухих фраз."
+            "тепло, но всегда с уважением. Избегай клише и сухих фраз. Отвечай коротко: 3-6 предложений, "
+            "до 900 символов."
         )
 
     def is_distress_message(self, text: str) -> bool:
@@ -926,6 +962,22 @@ class ChatService:
     def _format_rub(amount: int) -> str:
         return f"{amount} ₽"
 
+    @staticmethod
+    def _subscription_benefits_text() -> str:
+        return (
+            "Преимущества подписки:\n"
+            "• Таро: 7 карт и до 10 раскладов в день\n"
+            "• Нумерология: полный анализ и до 10 разборов в день\n"
+            "• Гороскоп: полный прогноз и до 10 гороскопов в день\n"
+            "• Подружка: расширенный диалог, до 30 сообщений в день"
+        )
+
+    @staticmethod
+    def _podruzhka_meta(meta: dict[str, Any] | None) -> dict[str, Any]:
+        payload = dict(meta or {})
+        payload["feature"] = "podruzhka"
+        return payload
+
     def _subscription_amounts(self) -> dict[int, int]:
         base = self.storage.get_subscription_price_rub()
         amounts = {1: base}
@@ -939,7 +991,8 @@ class ChatService:
             "Выбери тариф подписки:\n"
             f"• 1 месяц — {self._format_rub(amounts[1])}\n"
             f"• 6 месяцев — {self._format_rub(amounts[6])} (-10%)\n"
-            f"• 12 месяцев — {self._format_rub(amounts[12])} (-10%)"
+            f"• 12 месяцев — {self._format_rub(amounts[12])} (-10%)\n\n"
+            f"{self._subscription_benefits_text()}"
         )
         keyboard = [["1 месяц", "6 месяцев (-10%)"], ["12 месяцев (-10%)", "Назад в меню"]]
         self.send_message(chat_id, text, keyboard)

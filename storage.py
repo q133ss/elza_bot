@@ -447,6 +447,20 @@ class Storage:
         )
         return int(row["cnt"]) if row else 0
 
+    def count_podruzhka_replies_for_date(self, chat_id: int, date_value: str) -> int:
+        row = self._query_one(
+            """
+            SELECT COUNT(*) AS cnt
+            FROM chat_messages
+            WHERE chat_id = ?
+              AND role = 'assistant'
+              AND meta LIKE '%"feature":"podruzhka"%'
+              AND date(created_at) = date(?)
+            """,
+            (chat_id, date_value),
+        )
+        return int(row["cnt"]) if row else 0
+
     def numerology_exists(self, chat_id: int, type_value: str) -> bool:
         row = self._query_one(
             "SELECT 1 FROM numerology_readings WHERE chat_id = ? AND type = ? LIMIT 1",
