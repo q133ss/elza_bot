@@ -35,6 +35,19 @@ class Reminder:
     send_at: str
 
 
+@dataclass
+class PaymentRecord:
+    id: int
+    chat_id: int
+    yookassa_payment_id: str
+    status: str
+    amount_rub: int
+    months: int
+    confirmation_url: str | None
+    created_at: str
+    paid_at: str | None
+
+
 class Storage:
     def __init__(self, db_path: str) -> None:
         self._db_path = db_path
@@ -120,10 +133,35 @@ class Storage:
             send_at TEXT NOT NULL,
             sent_at TEXT
         );
+
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS payments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            yookassa_payment_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            amount_rub INTEGER NOT NULL,
+            months INTEGER NOT NULL,
+            confirmation_url TEXT,
+            created_at TEXT NOT NULL,
+            paid_at TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_payments_chat_id_created_at
+            ON payments (chat_id, created_at, id);
         """
         with self._lock:
             self._conn.executescript(schema)
             self._conn.commit()
+        self._ensure_default_settings()
+
+    def _ensure_default_settings(self) -> None:
+        if self.get_setting("subscription_price_rub") is None:
+            self.set_setting("subscription_price_rub", "200")
 
     def _execute(self, sql: str, params: Iterable[Any] = ()) -> sqlite3.Cursor:
         with self._lock:
@@ -370,6 +408,94 @@ class Storage:
             (self._now_str(), reminder_id),
         )
 
+    def get_setting(self, key: str) -> str | None:
+        row = self._query_one("SELECT value FROM app_settings WHERE key = ?", (key,))
+        return row["value"] if row else None
+
+    def set_setting(self, key: str, value: str) -> None:
+        self._execute(
+            """
+            INSERT INTO app_settings (key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            (key, value),
+        )
+
+    def get_subscription_price_rub(self) -> int:
+        value = self.get_setting("subscription_price_rub")
+        if value is None:
+            self.set_setting("subscription_price_rub", "200")
+            return 200
+        try:
+            return int(value)
+        except ValueError:
+            return 200
+
+    def set_subscription_price_rub(self, price_rub: int) -> None:
+        self.set_setting("subscription_price_rub", str(price_rub))
+
+    def create_payment_record(
+        self,
+        *,
+        chat_id: int,
+        yookassa_payment_id: str,
+        status: str,
+        amount_rub: int,
+        months: int,
+        confirmation_url: str | None,
+    ) -> None:
+        self._execute(
+            """
+            INSERT INTO payments
+                (chat_id, yookassa_payment_id, status, amount_rub, months, confirmation_url, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                chat_id,
+                yookassa_payment_id,
+                status,
+                amount_rub,
+                months,
+                confirmation_url,
+                self._now_str(),
+            ),
+        )
+
+    def update_payment_status(self, yookassa_payment_id: str, status: str, paid_at: str | None = None) -> None:
+        self._execute(
+            """
+            UPDATE payments
+            SET status = ?, paid_at = ?
+            WHERE yookassa_payment_id = ?
+            """,
+            (status, paid_at, yookassa_payment_id),
+        )
+
+    def get_payment_by_id(self, yookassa_payment_id: str) -> PaymentRecord | None:
+        row = self._query_one(
+            "SELECT * FROM payments WHERE yookassa_payment_id = ?",
+            (yookassa_payment_id,),
+        )
+        if not row:
+            return None
+        return self._row_to_payment(row)
+
+    def get_last_pending_payment(self, chat_id: int) -> PaymentRecord | None:
+        row = self._query_one(
+            """
+            SELECT *
+            FROM payments
+            WHERE chat_id = ? AND status IN ('pending', 'waiting_for_capture')
+            ORDER BY datetime(created_at) DESC, id DESC
+            LIMIT 1
+            """,
+            (chat_id,),
+        )
+        if not row:
+            return None
+        return self._row_to_payment(row)
+
     def _row_to_user(self, row: sqlite3.Row) -> User:
         return User(
             chat_id=row["chat_id"],
@@ -387,6 +513,20 @@ class Storage:
             chat_id=row["chat_id"],
             state=row["state"],
             data=self._json_loads(row["data"]),
+        )
+
+    @staticmethod
+    def _row_to_payment(row: sqlite3.Row) -> PaymentRecord:
+        return PaymentRecord(
+            id=row["id"],
+            chat_id=row["chat_id"],
+            yookassa_payment_id=row["yookassa_payment_id"],
+            status=row["status"],
+            amount_rub=row["amount_rub"],
+            months=row["months"],
+            confirmation_url=row["confirmation_url"],
+            created_at=row["created_at"],
+            paid_at=row["paid_at"],
         )
 
     @staticmethod

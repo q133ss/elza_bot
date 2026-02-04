@@ -48,6 +48,9 @@ class Settings:
     polling_sleep: float
     offset_file: str | None
     log_level: str
+    yookassa_shop_id: str
+    yookassa_secret_key: str
+    yookassa_return_url: str
 
 
 def load_settings() -> Settings:
@@ -55,11 +58,20 @@ def load_settings() -> Settings:
 
     telegram_token = _env("TELEGRAM_BOT_TOKEN", "")
     openai_api_key = _env("OPENAI_API_KEY", "")
+    yookassa_shop_id = _env("YOOKASSA_SHOP_ID", "")
+    yookassa_secret_key = _env("YOOKASSA_SECRET_KEY", "")
+    yookassa_return_url = _env("YOOKASSA_RETURN_URL", "")
 
     if not telegram_token:
         raise ValueError("TELEGRAM_BOT_TOKEN is required")
     if not openai_api_key:
         raise ValueError("OPENAI_API_KEY is required")
+    if not yookassa_shop_id:
+        raise ValueError("YOOKASSA_SHOP_ID is required")
+    if not yookassa_secret_key:
+        raise ValueError("YOOKASSA_SECRET_KEY is required")
+    if not yookassa_return_url:
+        raise ValueError("YOOKASSA_RETURN_URL is required")
 
     return Settings(
         telegram_token=telegram_token,
@@ -75,4 +87,7 @@ def load_settings() -> Settings:
         polling_sleep=_env_float("POLLING_SLEEP", 1.0),
         offset_file=_env("BOT_OFFSET_FILE"),
         log_level=_env("LOG_LEVEL", "INFO"),
+        yookassa_shop_id=yookassa_shop_id,
+        yookassa_secret_key=yookassa_secret_key,
+        yookassa_return_url=yookassa_return_url,
     )

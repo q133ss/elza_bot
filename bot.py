@@ -5,7 +5,7 @@ import logging
 import time
 from pathlib import Path
 
-from services import AIService, ChatService, TgService
+from services import AIService, ChatService, TgService, PaymentService
 from settings import load_settings
 from storage import Storage
 
@@ -55,7 +55,12 @@ def main() -> None:
         timeout=settings.openai_timeout,
     )
     tg = TgService(settings.telegram_token, timeout=settings.telegram_timeout)
-    chat = ChatService(tg=tg, ai=ai, storage=storage)
+    payments = PaymentService(
+        shop_id=settings.yookassa_shop_id,
+        secret_key=settings.yookassa_secret_key,
+        return_url=settings.yookassa_return_url,
+    )
+    chat = ChatService(tg=tg, ai=ai, storage=storage, payments=payments)
 
     offset = _load_offset(settings.offset_file)
 

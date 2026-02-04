@@ -9,13 +9,15 @@ from typing import Any
 from storage import Storage, TgSession, User
 from .ai_service import AIResponse, AIService
 from .tg_service import TgService
+from .payment_service import PaymentService
 
 
 class ChatService:
-    def __init__(self, tg: TgService, ai: AIService, storage: Storage) -> None:
+    def __init__(self, tg: TgService, ai: AIService, storage: Storage, payments: PaymentService) -> None:
         self.tg = tg
         self.ai = ai
         self.storage = storage
+        self.payments = payments
 
     def send_message(
         self,
@@ -160,6 +162,9 @@ class ChatService:
 
             case "subscription_menu":
                 self.route_subscription_menu(session, user, chat_id, text)
+
+            case "await_payment":
+                self.handle_payment_status(session, user, chat_id, text)
 
             case _:
                 self.show_main_menu(chat_id, user)
@@ -805,38 +810,156 @@ class ChatService:
     def shorten(self, text: str, limit: int = 200) -> str:
         return text if len(text) <= limit else f"{text[:limit]}..."
 
+    @staticmethod
+    def _format_rub(amount: int) -> str:
+        return f"{amount} ₽"
+
+    def _subscription_amounts(self) -> dict[int, int]:
+        base = self.storage.get_subscription_price_rub()
+        amounts = {1: base}
+        amounts[6] = int(round(base * 6 * 0.9))
+        amounts[12] = int(round(base * 12 * 0.9))
+        return amounts
+
     def show_subscription_menu(self, chat_id: int) -> None:
-        text = "Выбери тариф подписки:"
+        amounts = self._subscription_amounts()
+        text = (
+            "Выбери тариф подписки:\n"
+            f"• 1 месяц — {self._format_rub(amounts[1])}\n"
+            f"• 6 месяцев — {self._format_rub(amounts[6])} (-10%)\n"
+            f"• 12 месяцев — {self._format_rub(amounts[12])} (-10%)"
+        )
         keyboard = [["1 месяц", "6 месяцев (-10%)"], ["12 месяцев (-10%)", "Назад в меню"]]
         self.send_message(chat_id, text, keyboard)
 
     def route_subscription_menu(self, session: TgSession, user: User, chat_id: int, text: str) -> None:
-        now = datetime.now()
+        amounts = self._subscription_amounts()
         match text:
             case "1 месяц":
-                user.subscription = "paid"
-                user.subscription_expires_at = self._add_months(now, 1).strftime("%Y-%m-%d %H:%M:%S")
-                self.send_message(chat_id, "Подписка активирована на 1 месяц 💎")
-                self.show_main_menu(chat_id, user)
-                session.state = "main_menu"
+                self._start_payment(session, chat_id, months=1, amount_rub=amounts[1])
             case "6 месяцев (-10%)":
-                user.subscription = "paid"
-                user.subscription_expires_at = self._add_months(now, 6).strftime("%Y-%m-%d %H:%M:%S")
-                self.send_message(chat_id, "Подписка активирована на 6 месяцев 💎")
-                self.show_main_menu(chat_id, user)
-                session.state = "main_menu"
+                self._start_payment(session, chat_id, months=6, amount_rub=amounts[6])
             case "12 месяцев (-10%)":
-                user.subscription = "paid"
-                user.subscription_expires_at = self._add_months(now, 12).strftime("%Y-%m-%d %H:%M:%S")
-                self.send_message(chat_id, "Подписка активирована на 12 месяцев 💎")
-                self.show_main_menu(chat_id, user)
-                session.state = "main_menu"
+                self._start_payment(session, chat_id, months=12, amount_rub=amounts[12])
             case "Назад в меню":
                 self.show_main_menu(chat_id, user)
                 session.state = "main_menu"
             case _:
                 self.show_subscription_menu(chat_id)
                 session.state = "subscription_menu"
+
+    def _start_payment(self, session: TgSession, chat_id: int, *, months: int, amount_rub: int) -> None:
+        description = f"Подписка на {months} мес."
+        metadata = {"chat_id": chat_id, "months": months}
+        try:
+            created = self.payments.create_payment(
+                amount_rub=amount_rub,
+                description=description,
+                metadata=metadata,
+            )
+        except Exception:
+            self.send_message(
+                chat_id,
+                "Не удалось создать оплату. Попробуй позже или напиши в поддержку.",
+                [["Назад в меню"]],
+            )
+            session.state = "main_menu"
+            return
+
+        self.storage.create_payment_record(
+            chat_id=chat_id,
+            yookassa_payment_id=created.payment_id,
+            status=created.status,
+            amount_rub=created.amount_rub,
+            months=months,
+            confirmation_url=created.confirmation_url,
+        )
+        session.data = session.data or {}
+        session.data["payment_id"] = created.payment_id
+        session.data["payment_months"] = months
+
+        if created.confirmation_url:
+            text = (
+                "Для оплаты перейди по ссылке:\n"
+                f"{created.confirmation_url}\n\n"
+                "После оплаты нажми «Проверить оплату»."
+            )
+        else:
+            text = "Оплата создана. После оплаты нажми «Проверить оплату»."
+
+        self.send_message(chat_id, text, [["Проверить оплату"], ["Назад в меню"]])
+        session.state = "await_payment"
+
+    def handle_payment_status(self, session: TgSession, user: User, chat_id: int, text: str) -> None:
+        if text == "Назад в меню":
+            self.show_main_menu(chat_id, user)
+            session.state = "main_menu"
+            return
+
+        if text not in {"Проверить оплату", "1 месяц", "6 месяцев (-10%)", "12 месяцев (-10%)"}:
+            self.send_message(chat_id, "Нажми «Проверить оплату», чтобы подтвердить платёж.")
+            return
+
+        if text in {"1 месяц", "6 месяцев (-10%)", "12 месяцев (-10%)"}:
+            self.route_subscription_menu(session, user, chat_id, text)
+            return
+
+        payment_id = (session.data or {}).get("payment_id")
+        if not payment_id:
+            last_payment = self.storage.get_last_pending_payment(chat_id)
+            payment_id = last_payment.yookassa_payment_id if last_payment else None
+
+        if not payment_id:
+            self.send_message(
+                chat_id,
+                "Не нашла активный платёж. Выбери тариф ещё раз.",
+                [["1 месяц", "6 месяцев (-10%)"], ["12 месяцев (-10%)", "Назад в меню"]],
+            )
+            session.state = "subscription_menu"
+            return
+
+        try:
+            status = self.payments.get_payment_status(payment_id)
+        except Exception:
+            self.send_message(chat_id, "Не удалось проверить оплату. Попробуй ещё раз через минуту.")
+            return
+
+        if status == "succeeded":
+            payment = self.storage.get_payment_by_id(payment_id)
+            months = payment.months if payment else (session.data or {}).get("payment_months", 1)
+            self._activate_subscription(user, months)
+            self.storage.update_payment_status(payment_id, status, self._now_str())
+            self.send_message(chat_id, f"Оплата прошла! Подписка активирована на {months} мес. 💎")
+            self.show_main_menu(chat_id, user)
+            session.state = "main_menu"
+            return
+
+        if status == "canceled":
+            self.storage.update_payment_status(payment_id, status, None)
+            self.send_message(
+                chat_id,
+                "Платёж отменён. Если нужно, оформи подписку ещё раз.",
+                [["1 месяц", "6 месяцев (-10%)"], ["12 месяцев (-10%)", "Назад в меню"]],
+            )
+            session.state = "subscription_menu"
+            return
+
+        self.storage.update_payment_status(payment_id, status, None)
+        self.send_message(
+            chat_id,
+            "Платёж ещё не завершён. Попробуй проверить чуть позже.",
+            [["Проверить оплату"], ["Назад в меню"]],
+        )
+        session.state = "await_payment"
+
+    def _activate_subscription(self, user: User, months: int) -> None:
+        now = datetime.now()
+        user.subscription = "paid"
+        user.subscription_expires_at = self._add_months(now, months).strftime("%Y-%m-%d %H:%M:%S")
+
+    @staticmethod
+    def _now_str() -> str:
+        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     def schedule_retention(self, user: User) -> None:
         if self.storage.reminder_exists(user.chat_id):
