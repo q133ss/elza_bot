@@ -200,6 +200,36 @@ class Storage:
         self._execute("INSERT INTO users (chat_id) VALUES (?)", (chat_id,))
         return User(chat_id=chat_id)
 
+    def get_user(self, chat_id: int) -> User | None:
+        row = self._query_one("SELECT * FROM users WHERE chat_id = ?", (chat_id,))
+        if not row:
+            return None
+        return self._row_to_user(row)
+
+    def get_users(self, *, search: str | None = None, limit: int = 200, offset: int = 0) -> list[User]:
+        params: list[Any] = []
+        where = ""
+        if search:
+            search = search.strip()
+            if search.isdigit():
+                where = "WHERE chat_id = ?"
+                params.append(int(search))
+            else:
+                where = "WHERE name LIKE ? OR surname LIKE ?"
+                like = f"%{search}%"
+                params.extend([like, like])
+
+        sql = f"""
+            SELECT *
+            FROM users
+            {where}
+            ORDER BY chat_id DESC
+            LIMIT ? OFFSET ?
+        """
+        params.extend([limit, offset])
+        rows = self._query_all(sql, params)
+        return [self._row_to_user(row) for row in rows]
+
     def save_user(self, user: User) -> None:
         self._execute(
             """
@@ -255,6 +285,85 @@ class Storage:
             """,
             (chat_id, role, content, payload_meta, timestamp),
         )
+
+    def get_chat_messages(self, chat_id: int, limit: int = 500) -> list[sqlite3.Row]:
+        return self._query_all(
+            """
+            SELECT *
+            FROM chat_messages
+            WHERE chat_id = ?
+            ORDER BY datetime(created_at) ASC, id ASC
+            LIMIT ?
+            """,
+            (chat_id, limit),
+        )
+
+    def count_users(self) -> int:
+        row = self._query_one("SELECT COUNT(*) AS cnt FROM users")
+        return int(row["cnt"]) if row else 0
+
+    def count_new_users_between(self, start: datetime, end: datetime) -> int:
+        row = self._query_one(
+            """
+            SELECT COUNT(*) AS cnt
+            FROM (
+                SELECT chat_id, MIN(datetime(created_at)) AS first_seen
+                FROM chat_messages
+                GROUP BY chat_id
+            )
+            WHERE datetime(first_seen) >= datetime(?) AND datetime(first_seen) < datetime(?)
+            """,
+            (start.strftime("%Y-%m-%d %H:%M:%S"), end.strftime("%Y-%m-%d %H:%M:%S")),
+        )
+        return int(row["cnt"]) if row else 0
+
+    def count_active_subscriptions(self, now: datetime) -> int:
+        row = self._query_one(
+            """
+            SELECT COUNT(*) AS cnt
+            FROM users
+            WHERE subscription = 'paid'
+              AND subscription_expires_at IS NOT NULL
+              AND datetime(subscription_expires_at) >= datetime(?)
+            """,
+            (now.strftime("%Y-%m-%d %H:%M:%S"),),
+        )
+        return int(row["cnt"]) if row else 0
+
+    def sum_tokens_between(self, start: datetime, end: datetime) -> int:
+        rows = self._query_all(
+            """
+            SELECT meta
+            FROM chat_messages
+            WHERE role = 'assistant'
+              AND datetime(created_at) >= datetime(?)
+              AND datetime(created_at) < datetime(?)
+            """,
+            (start.strftime("%Y-%m-%d %H:%M:%S"), end.strftime("%Y-%m-%d %H:%M:%S")),
+        )
+        total = 0
+        for row in rows:
+            meta = self._json_loads(row["meta"])
+            usage = meta.get("usage") if isinstance(meta, dict) else None
+            if isinstance(usage, dict):
+                total += int(usage.get("total_tokens") or 0)
+        return total
+
+    def payments_summary_between(self, start: datetime, end: datetime) -> tuple[int, int]:
+        row = self._query_one(
+            """
+            SELECT COUNT(*) AS cnt, COALESCE(SUM(amount_rub), 0) AS total
+            FROM payments
+            WHERE status = 'succeeded'
+              AND paid_at IS NOT NULL
+              AND datetime(paid_at) >= datetime(?)
+              AND datetime(paid_at) < datetime(?)
+            """,
+            (start.strftime("%Y-%m-%d %H:%M:%S"), end.strftime("%Y-%m-%d %H:%M:%S")),
+        )
+        if not row:
+            return (0, 0)
+        return (int(row["cnt"]), int(row["total"] or 0))
 
     def count_taro_readings(self, chat_id: int, cards_count: int) -> int:
         row = self._query_one(
