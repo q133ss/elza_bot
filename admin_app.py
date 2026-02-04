@@ -3,12 +3,14 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 import os
+import time
 from typing import Any
 
 from dotenv import load_dotenv
 from flask import Flask, redirect, render_template_string, request, session, url_for
 
 from storage import Storage
+from services.tg_service import TgService
 
 
 def _env(name: str, default: str | None = None) -> str | None:
@@ -34,6 +36,8 @@ def create_app() -> Flask:
     db_path = _env("DATABASE_PATH", os.path.join("data", "taro.db"))
     admin_token = _env("ADMIN_TOKEN")
     admin_secret = _env("ADMIN_SECRET_KEY", "change-me")
+    telegram_token = _env("TELEGRAM_BOT_TOKEN")
+    telegram_timeout = _env_int("TELEGRAM_TIMEOUT", 20)
 
     if not admin_token:
         raise ValueError("ADMIN_TOKEN is required for admin panel")
@@ -41,6 +45,7 @@ def create_app() -> Flask:
     app = Flask(__name__)
     app.secret_key = admin_secret
     storage = Storage(db_path)
+    tg = TgService(telegram_token, timeout=telegram_timeout) if telegram_token else None
 
     def require_admin() -> bool:
         return session.get("admin") is True
@@ -160,6 +165,7 @@ def create_app() -> Flask:
                 <a href="{{ url_for('dashboard') }}">Главная</a>
                 <a href="{{ url_for('users') }}">Пользователи</a>
                 <a href="{{ url_for('settings') }}">Настройки</a>
+                <a href="{{ url_for('broadcast') }}">Рассылка</a>
                 <a href="{{ url_for('logout') }}">Выход</a>
               </nav>
             </header>
@@ -415,6 +421,151 @@ def create_app() -> Flask:
         </div>
         """
         return render_page("Настройки", body, current_price=current_price)
+
+    @app.route("/broadcast", methods=["GET", "POST"])
+    def broadcast() -> Any:
+        redirect_response = login_required()
+        if redirect_response:
+            return redirect_response
+
+        result_message = ""
+        recipients_preview: list[int] = []
+
+        if request.method == "POST":
+            if tg is None:
+                result_message = "TELEGRAM_BOT_TOKEN не задан — рассылка недоступна."
+            else:
+                message = (request.form.get("message") or "").strip()
+                mode = request.form.get("mode") or "all"
+                subscription = request.form.get("subscription") or ""
+                active_only = request.form.get("active_only") == "on"
+                raw_ids = request.form.get("chat_ids") or ""
+                dry_run = request.form.get("dry_run") == "on"
+                max_recipients = request.form.get("max_recipients") or ""
+                delay_ms = request.form.get("delay_ms") or ""
+
+                limit_value = None
+                if max_recipients.strip().isdigit():
+                    limit_value = max(1, int(max_recipients))
+
+                delay_value = 0.0
+                if delay_ms.strip().isdigit():
+                    delay_value = max(0, int(delay_ms)) / 1000.0
+
+                if not message:
+                    result_message = "Сообщение не может быть пустым."
+                else:
+                    recipients: list[int] = []
+                    if mode == "ids":
+                        tokens = [part.strip() for part in raw_ids.replace(",", " ").split()]
+                        ids: list[int] = []
+                        for token in tokens:
+                            if token.isdigit():
+                                ids.append(int(token))
+                        recipients = list(dict.fromkeys(ids))
+                    else:
+                        sub_filter = None
+                        if subscription in {"paid", "free"}:
+                            sub_filter = subscription
+                        recipients = storage.get_recipient_ids(
+                            subscription=sub_filter,
+                            active_only=active_only,
+                            now=datetime.now(),
+                            limit=limit_value,
+                        )
+
+                    recipients_preview = recipients[:10]
+
+                    if dry_run:
+                        result_message = f"Найдено получателей: {len(recipients)}."
+                    else:
+                        sent = 0
+                        failed = 0
+                        for chat_id in recipients:
+                            try:
+                                tg.send_message(chat_id, message)
+                                storage.log_chat_message(
+                                    chat_id,
+                                    "assistant",
+                                    message,
+                                    meta={"source": "admin_broadcast"},
+                                )
+                                sent += 1
+                            except Exception:
+                                failed += 1
+                            if delay_value > 0:
+                                time.sleep(delay_value)
+
+                        result_message = f"Отправлено: {sent}. Ошибок: {failed}."
+
+        body = """
+        <h1>Рассылка</h1>
+        {% if result_message %}
+          <div class="card" style="margin-bottom: 12px;">{{ result_message }}</div>
+        {% endif %}
+        {% if tg is none %}
+          <div class="card" style="margin-bottom: 12px;">
+            <strong>Внимание:</strong> переменная TELEGRAM_BOT_TOKEN не задана.
+          </div>
+        {% endif %}
+        <form method="post">
+          <div class="card" style="margin-bottom: 16px;">
+            <label class="muted">Сообщение</label>
+            <textarea name="message" rows="5" required>{{ request.form.get('message','') }}</textarea>
+          </div>
+          <div class="card" style="margin-bottom: 16px;">
+            <div class="row">
+              <div>
+                <label class="muted">Кому отправить</label>
+                <select name="mode">
+                  <option value="all" {% if request.form.get('mode','all') == 'all' %}selected{% endif %}>Всем</option>
+                  <option value="filter" {% if request.form.get('mode') == 'filter' %}selected{% endif %}>По фильтрам</option>
+                  <option value="ids" {% if request.form.get('mode') == 'ids' %}selected{% endif %}>По chat_id</option>
+                </select>
+              </div>
+              <div>
+                <label class="muted">Подписка</label>
+                <select name="subscription">
+                  <option value="" {% if request.form.get('subscription','') == '' %}selected{% endif %}>Любая</option>
+                  <option value="paid" {% if request.form.get('subscription') == 'paid' %}selected{% endif %}>Платные</option>
+                  <option value="free" {% if request.form.get('subscription') == 'free' %}selected{% endif %}>Бесплатные</option>
+                </select>
+              </div>
+              <div>
+                <label class="muted">Только активные</label>
+                <div><input type="checkbox" name="active_only" {% if request.form.get('active_only') %}checked{% endif %} /> активная подписка</div>
+              </div>
+              <div>
+                <label class="muted">Лимит получателей</label>
+                <input type="number" name="max_recipients" min="1" value="{{ request.form.get('max_recipients','') }}" />
+              </div>
+              <div>
+                <label class="muted">Задержка (мс)</label>
+                <input type="number" name="delay_ms" min="0" value="{{ request.form.get('delay_ms','50') }}" />
+              </div>
+            </div>
+            <div style="margin-top: 12px;">
+              <label class="muted">Chat ID (для режима "По chat_id")</label>
+              <textarea name="chat_ids" rows="3" placeholder="12345 67890">{{ request.form.get('chat_ids','') }}</textarea>
+            </div>
+            <div style="margin-top: 12px;">
+              <label><input type="checkbox" name="dry_run" {% if request.form.get('dry_run') %}checked{% endif %} /> Только проверить количество (без отправки)</label>
+            </div>
+          </div>
+          <button type="submit">Отправить</button>
+        </form>
+        {% if recipients_preview %}
+          <p class="muted">Пример получателей: {{ recipients_preview }}</p>
+        {% endif %}
+        """
+        return render_page(
+            "Рассылка",
+            body,
+            result_message=result_message,
+            recipients_preview=recipients_preview,
+            tg=tg,
+            request=request,
+        )
 
     return app
 

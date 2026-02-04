@@ -302,6 +302,48 @@ class Storage:
         row = self._query_one("SELECT COUNT(*) AS cnt FROM users")
         return int(row["cnt"]) if row else 0
 
+    def get_recipient_ids(
+        self,
+        *,
+        subscription: str | None = None,
+        active_only: bool = False,
+        now: datetime | None = None,
+        limit: int | None = None,
+    ) -> list[int]:
+        clauses: list[str] = []
+        params: list[Any] = []
+
+        if subscription == "paid":
+            clauses.append("subscription = 'paid'")
+        elif subscription == "free":
+            clauses.append("(subscription IS NULL OR subscription != 'paid')")
+
+        if active_only:
+            now_value = (now or datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
+            clauses.append("subscription = 'paid'")
+            clauses.append("subscription_expires_at IS NOT NULL")
+            clauses.append("datetime(subscription_expires_at) >= datetime(?)")
+            params.append(now_value)
+
+        where = ""
+        if clauses:
+            where = "WHERE " + " AND ".join(clauses)
+
+        limit_sql = ""
+        if limit is not None and limit > 0:
+            limit_sql = "LIMIT ?"
+            params.append(limit)
+
+        sql = f"""
+            SELECT chat_id
+            FROM users
+            {where}
+            ORDER BY chat_id DESC
+            {limit_sql}
+        """
+        rows = self._query_all(sql, params)
+        return [int(row["chat_id"]) for row in rows]
+
     def count_new_users_between(self, start: datetime, end: datetime) -> int:
         row = self._query_one(
             """
