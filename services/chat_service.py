@@ -13,6 +13,7 @@ from .payment_service import PaymentService
 
 
 class ChatService:
+    PAYMENT_REMINDER_PREFIX = "__PAYMENT_CHECK__"
     _SYSTEM_COMMANDS = {
         "🃏 Расклад Таро",
         "🔢 Нумерология",
@@ -929,6 +930,7 @@ class ChatService:
             months=months,
             confirmation_url=created.confirmation_url,
         )
+        self._schedule_payment_checks(chat_id, created.payment_id)
         session.data = session.data or {}
         session.data["payment_id"] = created.payment_id
         session.data["payment_months"] = months
@@ -973,14 +975,62 @@ class ChatService:
             session.state = "subscription_menu"
             return
 
+        self._process_payment_status(
+            session=session,
+            user=user,
+            chat_id=chat_id,
+            payment_id=payment_id,
+            notify_pending=True,
+            notify_errors=True,
+        )
+
+    def handle_scheduled_payment_check(self, chat_id: int, payment_id: str) -> None:
+        session = self.storage.get_or_create_session(chat_id)
+        user = self.storage.get_or_create_user(chat_id)
+        self._process_payment_status(
+            session=session,
+            user=user,
+            chat_id=chat_id,
+            payment_id=payment_id,
+            notify_pending=False,
+            notify_errors=False,
+        )
+        self.storage.save_user(user)
+        self.storage.save_session(session)
+
+    def _activate_subscription(self, user: User, months: int) -> None:
+        now = datetime.now()
+        user.subscription = "paid"
+        user.subscription_expires_at = self._add_months(now, months).strftime("%Y-%m-%d %H:%M:%S")
+
+    def _schedule_payment_checks(self, chat_id: int, payment_id: str) -> None:
+        now = datetime.now()
+        for minutes in (5, 10):
+            payload = f"{self.PAYMENT_REMINDER_PREFIX}|{payment_id}|{minutes}"
+            self.storage.create_reminder(chat_id, payload, now + timedelta(minutes=minutes))
+
+    def _process_payment_status(
+        self,
+        *,
+        session: TgSession,
+        user: User,
+        chat_id: int,
+        payment_id: str,
+        notify_pending: bool,
+        notify_errors: bool,
+    ) -> None:
+        payment = self.storage.get_payment_by_id(payment_id)
+        if payment and payment.status == "succeeded":
+            return
+
         try:
             status = self.payments.get_payment_status(payment_id)
         except Exception:
-            self.send_message(chat_id, "Не удалось проверить оплату. Попробуй ещё раз через минуту.")
+            if notify_errors:
+                self.send_message(chat_id, "Не удалось проверить оплату. Попробуй ещё раз через минуту.")
             return
 
         if status == "succeeded":
-            payment = self.storage.get_payment_by_id(payment_id)
             months = payment.months if payment else (session.data or {}).get("payment_months", 1)
             self._activate_subscription(user, months)
             self.storage.update_payment_status(payment_id, status, self._now_str())
@@ -1000,17 +1050,13 @@ class ChatService:
             return
 
         self.storage.update_payment_status(payment_id, status, None)
-        self.send_message(
-            chat_id,
-            "Платёж ещё не завершён. Попробуй проверить чуть позже.",
-            [["Проверить оплату"], ["Назад в меню"]],
-        )
+        if notify_pending:
+            self.send_message(
+                chat_id,
+                "Платёж ещё не завершён. Попробуй проверить чуть позже.",
+                [["Проверить оплату"], ["Назад в меню"]],
+            )
         session.state = "await_payment"
-
-    def _activate_subscription(self, user: User, months: int) -> None:
-        now = datetime.now()
-        user.subscription = "paid"
-        user.subscription_expires_at = self._add_months(now, months).strftime("%Y-%m-%d %H:%M:%S")
 
     @staticmethod
     def _now_str() -> str:

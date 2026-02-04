@@ -28,9 +28,18 @@ def _save_offset(path: str | None, offset: int) -> None:
     Path(path).write_text(str(offset), encoding="utf-8")
 
 
-def _send_due_reminders(storage: Storage, tg: TgService) -> None:
+def _send_due_reminders(storage: Storage, tg: TgService, chat: ChatService) -> None:
     now = datetime.now()
     for reminder in storage.get_due_reminders(now):
+        if reminder.message.startswith(ChatService.PAYMENT_REMINDER_PREFIX):
+            parts = reminder.message.split("|", 2)
+            if len(parts) >= 2:
+                payment_id = parts[1]
+                if payment_id:
+                    chat.handle_scheduled_payment_check(reminder.chat_id, payment_id)
+            storage.mark_reminder_sent(reminder.id)
+            continue
+
         tg.send_message(reminder.chat_id, reminder.message)
         storage.log_chat_message(
             reminder.chat_id,
@@ -71,7 +80,7 @@ def main() -> None:
                 offset = update.get("update_id", offset) + 1
                 chat.handle_update(update)
             _save_offset(settings.offset_file, offset)
-            _send_due_reminders(storage, tg)
+            _send_due_reminders(storage, tg, chat)
         except Exception as exc:
             logging.exception("Polling error: %s", exc)
             time.sleep(2)
