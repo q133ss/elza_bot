@@ -34,6 +34,7 @@ class ChatService:
         "12 месяцев (-10%)",
         "Не знаю",
         "Старт",
+        "Связаться с администратором",
     }
     _SURNAME_RE = re.compile(r"^[A-Za-zА-Яа-яЁё\\-\\s']{2,100}$")
     PODRUZHKA_DAILY_LIMIT = 30
@@ -213,6 +214,26 @@ class ChatService:
             case "await_payment":
                 self.handle_payment_status(session, user, chat_id, text)
 
+            case "support_ask":
+                if text == "Назад в меню":
+                    self.show_main_menu(chat_id, user)
+                    session.state = "main_menu"
+                elif not text:
+                    self.send_message(chat_id, "Опиши проблему одним сообщением.")
+                else:
+                    self.storage.log_chat_message(
+                        chat_id,
+                        "system",
+                        f"SUPPORT_REQUEST: {text}",
+                        meta={"source": "support_request"},
+                    )
+                    self.send_message(
+                        chat_id,
+                        "Спасибо! Я передала сообщение администратору. Мы ответим как можно скорее.",
+                        [["Назад в меню"]],
+                    )
+                    session.state = "main_menu"
+
             case _:
                 self.show_main_menu(chat_id, user)
                 session.state = "main_menu"
@@ -306,7 +327,15 @@ class ChatService:
                     "Я помогу:\n• Сформулировать вопрос к Таро\n• Сделать базовый расклад (3 карты бесплатно) или глубокий расклад (7 карт для подписчиков)\n\n"
                     f"{self._subscription_benefits_text()}\n\n"
                     "Просто выбери «🃏 Расклад Таро» и следуй подсказкам.",
+                    [["Связаться с администратором"], ["Назад в меню"]],
                 )
+            case "Связаться с администратором":
+                self.send_message(
+                    chat_id,
+                    "Опиши проблему одним сообщением — я передам администратору.",
+                    [["Назад в меню"]],
+                )
+                session.state = "support_ask"
 
             case _:
                 self.show_main_menu(chat_id, user)

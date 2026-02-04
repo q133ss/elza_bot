@@ -164,6 +164,7 @@ def create_app() -> Flask:
               <nav>
                 <a href="{{ url_for('dashboard') }}">Главная</a>
                 <a href="{{ url_for('users') }}">Пользователи</a>
+                <a href="{{ url_for('support') }}">Поддержка</a>
                 <a href="{{ url_for('settings') }}">Настройки</a>
                 <a href="{{ url_for('broadcast') }}">Рассылка</a>
                 <a href="{{ url_for('logout') }}">Выход</a>
@@ -321,15 +322,33 @@ def create_app() -> Flask:
         if not user:
             return render_page("Пользователь", "<p>Пользователь не найден.</p>")
 
+        admin_message_result = ""
         if request.method == "POST":
-            user.name = _clean(request.form.get("name"))
-            user.surname = _clean(request.form.get("surname"))
-            user.birth_date = _clean(request.form.get("birth_date"))
-            user.birth_time = _clean(request.form.get("birth_time"))
-            user.subscription = _clean(request.form.get("subscription"))
-            user.subscription_expires_at = _clean(request.form.get("subscription_expires_at"))
-            user.podruzhka_free_used_at = _clean(request.form.get("podruzhka_free_used_at"))
-            storage.save_user(user)
+            admin_message = (request.form.get("admin_message") or "").strip()
+            if admin_message:
+                if not tg:
+                    admin_message_result = "TELEGRAM_BOT_TOKEN не задан — отправка недоступна."
+                else:
+                    try:
+                        tg.send_message(chat_id, admin_message)
+                        storage.log_chat_message(
+                            chat_id,
+                            "assistant",
+                            admin_message,
+                            meta={"source": "admin_reply"},
+                        )
+                        admin_message_result = "Сообщение отправлено пользователю."
+                    except Exception:
+                        admin_message_result = "Не удалось отправить сообщение пользователю."
+            else:
+                user.name = _clean(request.form.get("name"))
+                user.surname = _clean(request.form.get("surname"))
+                user.birth_date = _clean(request.form.get("birth_date"))
+                user.birth_time = _clean(request.form.get("birth_time"))
+                user.subscription = _clean(request.form.get("subscription"))
+                user.subscription_expires_at = _clean(request.form.get("subscription_expires_at"))
+                user.podruzhka_free_used_at = _clean(request.form.get("podruzhka_free_used_at"))
+                storage.save_user(user)
 
         limit = _env_int("ADMIN_DIALOG_LIMIT", 800)
         messages = storage.get_chat_messages(chat_id, limit=limit)
@@ -377,6 +396,19 @@ def create_app() -> Flask:
           </form>
         </div>
 
+        <div class="card" style="margin-bottom: 16px;">
+          <h3>Ответить пользователю</h3>
+          {% if admin_message_result %}
+            <div class="muted" style="margin-bottom: 8px;">{{ admin_message_result }}</div>
+          {% endif %}
+          <form method="post">
+            <textarea name="admin_message" rows="4" placeholder="Текст ответа" required></textarea>
+            <div style="margin-top: 12px;" class="actions">
+              <button type="submit">Отправить</button>
+            </div>
+          </form>
+        </div>
+
         <h2>Диалог (последние {{ messages|length }})</h2>
         {% for msg in messages %}
           <div class="message">
@@ -390,7 +422,50 @@ def create_app() -> Flask:
           <p>Сообщений нет.</p>
         {% endfor %}
         """
-        return render_page("Пользователь", body, user=user, messages=messages)
+        return render_page(
+            "Пользователь",
+            body,
+            user=user,
+            messages=messages,
+            admin_message_result=admin_message_result,
+        )
+
+    @app.route("/support")
+    def support() -> Any:
+        redirect_response = login_required()
+        if redirect_response:
+            return redirect_response
+
+        limit = _env_int("ADMIN_SUPPORT_LIMIT", 200)
+        requests_list = storage.get_support_requests(limit=limit)
+
+        body = """
+        <h1>Поддержка</h1>
+        <p class="muted">Заявки от пользователей. Чтобы ответить — открой пользователя и отправь сообщение в блоке «Ответить пользователю».</p>
+        <table>
+          <thead>
+            <tr>
+              <th>Chat ID</th>
+              <th>Дата</th>
+              <th>Сообщение</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+          {% for item in requests_list %}
+            <tr>
+              <td>{{ item.chat_id }}</td>
+              <td>{{ item.created_at }}</td>
+              <td>{{ item.content }}</td>
+              <td><a href="{{ url_for('user_detail', chat_id=item.chat_id) }}">Открыть</a></td>
+            </tr>
+          {% else %}
+            <tr><td colspan="4">Нет заявок</td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+        """
+        return render_page("Поддержка", body, requests_list=requests_list)
 
     @app.route("/settings", methods=["GET", "POST"])
     def settings() -> Any:

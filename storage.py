@@ -298,6 +298,34 @@ class Storage:
             (chat_id, limit),
         )
 
+    def get_support_requests(self, limit: int = 200) -> list[dict[str, Any]]:
+        rows = self._query_all(
+            """
+            SELECT chat_id, content, created_at
+            FROM chat_messages
+            WHERE role = 'system'
+              AND meta LIKE '%"source":"support_request"%'
+            ORDER BY datetime(created_at) DESC, id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        seen: set[int] = set()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            chat_id = int(row["chat_id"])
+            if chat_id in seen:
+                continue
+            seen.add(chat_id)
+            result.append(
+                {
+                    "chat_id": chat_id,
+                    "content": row["content"],
+                    "created_at": row["created_at"],
+                }
+            )
+        return result
+
     def count_users(self) -> int:
         row = self._query_one("SELECT COUNT(*) AS cnt FROM users")
         return int(row["cnt"]) if row else 0
