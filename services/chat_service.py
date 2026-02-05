@@ -30,9 +30,7 @@ class ChatService:
         "ℹ️ Помощь",
         "Таро на день",
         "Таро на любовь",
-        "Другой вопрос",
         "Назад в меню",
-        "Задать вопрос",
         "Получить доступ",
         "Закончить разговор",
         "Проверить оплату",
@@ -296,7 +294,7 @@ class ChatService:
                     "Выбери тип расклада:",
                     [
                         ["Таро на день", "Таро на любовь"],
-                        ["Другой вопрос", "Назад в меню"],
+                        ["Назад в меню"],
                     ],
                 )
                 session.state = "taro_menu"
@@ -382,12 +380,12 @@ class ChatService:
             "✅ «Какие чувства у Никиты ко мне?»\n"
             "✅ «Будем ли мы вместе с Никитой?»\n"
             "❌ Не: «Что меня ждет с ним?» — слишком общее.\n\n"
-            "Напиши свой вопрос или нажми «Другой вопрос» для свободного ввода."
+            "Напиши свой вопрос одним сообщением."
         )
         self.send_message(
             chat_id,
             suggest,
-            [["Задать вопрос"], ["Назад в меню"]],
+            [["Назад в меню"]],
         )
 
         session.state = "taro_ask_question"
@@ -396,6 +394,10 @@ class ChatService:
         if text == "Назад в меню":
             self.show_main_menu(chat_id, user)
             session.state = "main_menu"
+            return
+        if text == "Задать вопрос":
+            self.send_message(chat_id, "Пожалуйста, напиши свой вопрос одним сообщением.", [["Назад в меню"]])
+            session.state = "taro_ask_question"
             return
 
         cards = 7 if user.subscription == "paid" else 3
@@ -903,7 +905,7 @@ class ChatService:
         if len(result) > 4000:
             result = result[:4000] + "..."
 
-        self.send_message(chat_id, result, [["Задать вопрос", "Назад в меню"]], meta=ai_meta)
+        self.send_message(chat_id, result, [["Назад в меню"]], meta=ai_meta)
 
         self.storage.create_numerology_reading(
             chat_id=user.chat_id,

@@ -210,7 +210,7 @@ class ChatService
                 // Переходим в меню таро
                 $this->tg->sendMessage($chatId, "Выбери тип расклада:", [
                     ['Таро на день', 'Таро на любовь'],
-                    ['Другой вопрос', 'Назад в меню']
+                    ['Назад в меню']
                 ]);
                 $session->state = 'taro_menu';
                 break;
@@ -285,7 +285,7 @@ class ChatService
         }
 
         // Сохраняем тип расклада
-        $type = $text; // Таро на день / Таро на любовь / Другой вопрос
+        $type = $text; // Таро на день / Таро на любовь
         $session->data = array_merge($session->data ?? [], ['taro_type' => $type]);
 
         // Предложим подсказки по формулировке вопроса и кнопки
@@ -294,9 +294,8 @@ class ChatService
             "✅ «Какие чувства у Никиты ко мне?»\n".
             "✅ «Будем ли мы вместе с Никитой?»\n".
             "❌ Не: «Что меня ждет с ним?» — слишком общее.\n\n".
-            "Напиши свой вопрос или нажми «Другой вопрос» для свободного ввода.";
+            "Напиши свой вопрос одним сообщением.";
         $this->tg->sendMessage($chatId, $suggest, [
-            ['Задать вопрос'],
             ['Назад в меню']
         ]);
 
@@ -605,7 +604,7 @@ class ChatService
             $result = mb_substr($result, 0, 4000) . '...';
         }
 
-        $this->tg->sendMessage($chatId, $result, [['Задать вопрос', 'Назад в меню']]);
+        $this->tg->sendMessage($chatId, $result, [['Назад в меню']]);
 
         NumerologyReading::create([
             'chat_id' => $user->chat_id,
