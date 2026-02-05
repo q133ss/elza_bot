@@ -102,6 +102,17 @@ class Storage:
             created_at TEXT
         );
 
+        CREATE TABLE IF NOT EXISTS tarot_mode_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            topic TEXT,
+            timeframe TEXT,
+            spread TEXT,
+            cards TEXT,
+            meta TEXT,
+            created_at TEXT
+        );
+
         CREATE TABLE IF NOT EXISTS numerology_readings (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             chat_id INTEGER NOT NULL,
@@ -463,6 +474,17 @@ class Storage:
         )
         return int(row["cnt"]) if row else 0
 
+    def count_tarot_mode_for_date(self, chat_id: int, date_value: str) -> int:
+        row = self._query_one(
+            """
+            SELECT COUNT(*) AS cnt
+            FROM tarot_mode_logs
+            WHERE chat_id = ? AND date(created_at) = date(?)
+            """,
+            (chat_id, date_value),
+        )
+        return int(row["cnt"]) if row else 0
+
     def count_numerology_readings_for_date(self, chat_id: int, date_value: str) -> int:
         row = self._query_one(
             """
@@ -540,6 +562,33 @@ class Storage:
                 cards_count,
                 result,
                 self._json_dumps(meta),
+                self._now_str(),
+            ),
+        )
+
+    def create_tarot_mode_log(
+        self,
+        *,
+        chat_id: int,
+        topic: str,
+        timeframe: str,
+        spread: str,
+        cards: str,
+        meta: dict[str, Any] | None = None,
+    ) -> None:
+        self._execute(
+            """
+            INSERT INTO tarot_mode_logs
+                (chat_id, topic, timeframe, spread, cards, meta, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                chat_id,
+                topic,
+                timeframe,
+                spread,
+                cards,
+                self._json_dumps(meta or {}),
                 self._now_str(),
             ),
         )

@@ -21,11 +21,13 @@ class ChatService:
     )
     _SYSTEM_COMMANDS = {
         "🃏 Расклад Таро",
+        "🃏 Режим таролога",
         "🔢 Нумерология",
         "♒ Гороскоп",
         "💬 Подружка",
         "💎 Подписка",
         "№️ Помощь",
+        "ℹ️ Помощь",
         "Таро на день",
         "Таро на любовь",
         "Другой вопрос",
@@ -40,11 +42,15 @@ class ChatService:
         "Не знаю",
         "Старт",
         "Связаться с администратором",
+        "Сделать ещё расклад",
+        "В меню",
     }
     _SURNAME_RE = re.compile(r"^[A-Za-zА-Яа-яЁё\\-\\s']{2,100}$")
     PODRUZHKA_DAILY_LIMIT = 30
     PODRUZHKA_MAX_INPUT_CHARS = 1000
     PODRUZHKA_MAX_REPLY_CHARS = 1200
+    TAROT_MODE_FREE_DAILY_LIMIT = 1
+    TAROT_MODE_PAID_DAILY_LIMIT = 5
 
     def __init__(self, tg: TgService, ai: AIService, storage: Storage, payments: PaymentService) -> None:
         self.tg = tg
@@ -139,6 +145,18 @@ class ChatService:
 
             case "taro_ask_question":
                 self.handle_taro_question(session, user, chat_id, text)
+
+            case "tarot_mode_topic":
+                self.handle_tarot_mode_topic(session, user, chat_id, text)
+
+            case "tarot_mode_timeframe":
+                self.handle_tarot_mode_timeframe(session, user, chat_id, text)
+
+            case "tarot_mode_cards":
+                self.handle_tarot_mode_cards(session, user, chat_id, text)
+
+            case "tarot_mode_done":
+                self.handle_tarot_mode_done(session, user, chat_id, text)
 
             case "numerology_ask_surname":
                 if not text:
@@ -263,9 +281,10 @@ class ChatService:
             "Я рядом, чтобы помочь — просто выбери раздел, который тебе сейчас ближе."
         )
         keyboard = [
-            ["🃏 Расклад Таро", "🔢 Нумерология"],
-            ["♒ Гороскоп", "💬 Подружка"],
-            ["💎 Подписка", "ℹ️ Помощь"],
+            ["🃏 Расклад Таро", "🃏 Режим таролога"],
+            ["🔢 Нумерология", "♒ Гороскоп"],
+            ["💬 Подружка", "💎 Подписка"],
+            ["ℹ️ Помощь"],
         ]
         self.send_message(chat_id, text, keyboard)
 
@@ -281,6 +300,9 @@ class ChatService:
                     ],
                 )
                 session.state = "taro_menu"
+
+            case "🃏 Режим таролога":
+                self.start_tarot_mode(session, user, chat_id)
 
             case "🔢 Нумерология":
                 if not user.surname:
@@ -457,6 +479,178 @@ class ChatService:
             self.send_message(chat_id, final, [["Получить доступ", "Назад в меню"]], meta=ai_meta)
             self.schedule_retention(user)
             session.state = "main_menu"
+
+    def start_tarot_mode(self, session: TgSession, user: User, chat_id: int) -> None:
+        if not self._check_tarot_mode_limit(session, user, chat_id):
+            return
+        self._reset_tarot_mode_session(session)
+        text = (
+            "У тебя есть карты, но ты не уверена в трактовке? Я помогу 💜\n"
+            "На какую сферу гадаем?\n"
+            "Выбери или напиши: отношения / работа / деньги / выбор"
+        )
+        keyboard = [["отношения", "работа", "деньги"], ["выбор", "другое"]]
+        self.send_message(chat_id, text, keyboard)
+        session.state = "tarot_mode_topic"
+
+    def handle_tarot_mode_topic(self, session: TgSession, user: User, chat_id: int, text: str) -> None:
+        if text in {"В меню", "Назад в меню"}:
+            self._reset_tarot_mode_session(session)
+            self.show_main_menu(chat_id, user)
+            session.state = "main_menu"
+            return
+
+        if text.lower() == "другое":
+            self.send_message(chat_id, "Напиши тему одним-двумя словами.")
+            session.state = "tarot_mode_topic"
+            return
+
+        session.data = session.data or {}
+        session.data["tarot_mode_topic"] = text.strip()
+        self.send_message(
+            chat_id,
+            "На какой срок смотрим?\nсейчас / неделя / месяц / три месяца / пол года / год",
+            [["сейчас", "неделя", "месяц"], ["три месяца", "пол года", "год"]],
+        )
+        session.state = "tarot_mode_timeframe"
+
+    def handle_tarot_mode_timeframe(self, session: TgSession, user: User, chat_id: int, text: str) -> None:
+        if text in {"В меню", "Назад в меню"}:
+            self._reset_tarot_mode_session(session)
+            self.show_main_menu(chat_id, user)
+            session.state = "main_menu"
+            return
+
+        session.data = session.data or {}
+        session.data["tarot_mode_timeframe"] = text.strip()
+
+        topic = session.data.get("tarot_mode_topic", "")
+        timeframe = session.data.get("tarot_mode_timeframe", "")
+        prompt = self.build_tarot_mode_spread_prompt(topic, timeframe)
+        system = "Ты опытный таролог и методолог раскладов. Отвечай по-русски."
+
+        ai_response = self.ask_ai(prompt, system)
+        ai_meta = self._ai_meta(ai_response)
+        if not ai_response:
+            spread_text = self.build_tarot_mode_spread_fallback(topic, timeframe)
+        else:
+            spread_text = ai_response.content.strip()
+
+        cards_required = self._extract_tarot_spread_cards_count(spread_text)
+        session.data["tarot_mode_spread_text"] = spread_text
+        session.data["tarot_mode_cards_required"] = cards_required
+        session.data["tarot_mode_ai_meta"] = ai_meta
+
+        self.send_message(chat_id, spread_text, meta=ai_meta)
+        self.send_message(
+            chat_id,
+            "Пришли мне выпавшие карты списком и обязательно укажи прямые/перевёрнутые.\n"
+            "Пример:\n"
+            "1) 3 жезлов (прямая)\n"
+            "2) Король мечей (перевёрнутая)\n"
+            "...",
+        )
+        session.state = "tarot_mode_cards"
+
+    def handle_tarot_mode_cards(self, session: TgSession, user: User, chat_id: int, text: str) -> None:
+        if text in {"В меню", "Назад в меню"}:
+            self._reset_tarot_mode_session(session)
+            self.show_main_menu(chat_id, user)
+            session.state = "main_menu"
+            return
+
+        parsed = self._parse_tarot_cards(text)
+        if parsed is None:
+            self.send_message(
+                chat_id,
+                "Не вижу список карт в нужном формате. Повтори, пожалуйста, по примеру:\n"
+                "1) 3 жезлов (прямая)\n"
+                "2) Король мечей (перевёрнутая)\n"
+                "...",
+            )
+            session.state = "tarot_mode_cards"
+            return
+
+        cards = parsed
+        cards_required = session.data.get("tarot_mode_cards_required")
+        if isinstance(cards_required, int):
+            if len(cards) != cards_required:
+                self.send_message(
+                    chat_id,
+                    f"В раскладе {cards_required} карт. Пришли, пожалуйста, ровно {cards_required} карт по примеру.",
+                )
+                session.state = "tarot_mode_cards"
+                return
+        elif len(cards) < 3:
+            self.send_message(
+                chat_id,
+                "Нужно минимум 3 карты. Повтори, пожалуйста, по примеру.",
+            )
+            session.state = "tarot_mode_cards"
+            return
+
+        if not self._check_tarot_mode_limit(session, user, chat_id):
+            return
+
+        topic = session.data.get("tarot_mode_topic", "")
+        timeframe = session.data.get("tarot_mode_timeframe", "")
+        spread_text = session.data.get("tarot_mode_spread_text", "")
+        question = session.data.get("tarot_mode_question", "")
+
+        cards_text = "\n".join(
+            f"{idx}) {card['name']} ({card['orientation']})" for idx, card in enumerate(cards, start=1)
+        )
+        prompt = self.build_tarot_mode_interpret_prompt(
+            topic=topic,
+            timeframe=timeframe,
+            question=question,
+            spread_text=spread_text,
+            cards_text=cards_text,
+        )
+        system = "Ты опытный таролог. Интерпретируй карты бережно и практично."
+
+        self.send_message(chat_id, "Готовлю расшифровку, минутку.")
+        ai_response = self.ask_ai(prompt, system)
+        ai_meta = self._ai_meta(ai_response)
+        if not ai_response:
+            self.send_message(chat_id, "Сейчас не могу расшифровать расклад. Попробуй чуть позже.")
+            self._reset_tarot_mode_session(session)
+            self.show_main_menu(chat_id, user)
+            session.state = "main_menu"
+            return
+
+        self.storage.create_tarot_mode_log(
+            chat_id=user.chat_id,
+            topic=topic,
+            timeframe=timeframe,
+            spread=spread_text,
+            cards=cards_text,
+            meta={
+                "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "prompt": self.shorten(prompt, 800),
+                **ai_meta,
+            },
+        )
+
+        self.send_message(
+            chat_id,
+            ai_response.content.strip(),
+            [["Сделать ещё расклад", "В меню"]],
+            meta=ai_meta,
+        )
+        self._reset_tarot_mode_session(session)
+        session.state = "tarot_mode_done"
+
+    def handle_tarot_mode_done(self, session: TgSession, user: User, chat_id: int, text: str) -> None:
+        if text == "Сделать ещё расклад":
+            self.start_tarot_mode(session, user, chat_id)
+            return
+        if text == "В меню":
+            self.show_main_menu(chat_id, user)
+            session.state = "main_menu"
+            return
+        self.send_message(chat_id, "Выбери действие:", [["Сделать ещё расклад", "В меню"]])
+        session.state = "tarot_mode_done"
 
     def render_numerology_menu(self, chat_id: int, user: User) -> None:
         text = "Выбери формат нумерологического разбора:"
@@ -976,6 +1170,141 @@ class ChatService:
             f"Вопрос пользователя: «{question}»."
         )
         return f"{system}\n\n{instruction}"
+
+    def build_tarot_mode_spread_prompt(self, topic: str, timeframe: str) -> str:
+        return (
+            f"Сформируй инструкцию расклада для новичка.\n"
+            f"Сфера: {topic}\n"
+            f"Срок: {timeframe}\n\n"
+            "Выбери один подходящий шаблон и адаптируй:\n"
+            "• отношения/мысли-чувства-намерения (3–5)\n"
+            "• перспектива/совет (4–5)\n"
+            "• выбор A/B (6)\n"
+            "• работа/деньги (5)\n\n"
+            "Количество карт: от 3 до 7, предпочтительно 5.\n\n"
+            "Строгий формат ответа (никаких других блоков):\n"
+            "Расклад “<название>” (<N> карт)\n"
+            "1) ...\n"
+            "2) ...\n"
+            "...\n"
+            "Позиции:\n"
+            "1 — ...\n"
+            "2 — ...\n\n"
+            "Требования:\n"
+            "- Шаги строго 1..N, короткие и конкретные.\n"
+            "- В шагах попроси держать/проговаривать вопрос во время тасовки.\n"
+            "- Фразу «Если карта перевёрнутая — отметь это» включи как отдельное предложение в одном из шагов (не отдельной строкой вне шагов).\n"
+            "- Не добавляй предисловий, предупреждений, лирики, эмодзи, текста “от себя”.\n"
+            "- Не проси прислать карты и не давай формат ввода карт.\n"
+            "- Ответ должен содержать только 3 блока: заголовок, шаги, позиции."
+        )
+
+    @staticmethod
+    def build_tarot_mode_spread_fallback(topic: str, timeframe: str) -> str:
+        return (
+            f"Расклад “Фокус и перспектива” (5 карт)\n"
+            "1) Сконцентрируйся на теме и сроке, держи/проговори вопрос во время тасовки.\n"
+            "2) Выложи 1 карту.\n"
+            "3) Выложи 2 карту.\n"
+            "4) Выложи 3 карту.\n"
+            "5) Выложи 4 и 5 карты. Если карта перевёрнутая — отметь это.\n"
+            "Позиции:\n"
+            "1 — Суть ситуации в сфере.\n"
+            "2 — Что сейчас влияет на развитие.\n"
+            "3 — Внутренний ресурс или препятствие.\n"
+            "4 — Ближайшая перспектива.\n"
+            "5 — Совет на срок."
+        )
+
+    @staticmethod
+    def build_tarot_mode_interpret_prompt(
+        *,
+        topic: str,
+        timeframe: str,
+        question: str,
+        spread_text: str,
+        cards_text: str,
+    ) -> str:
+        question_value = question if question else "не задан"
+        return (
+            "Контекст расклада:\n"
+            f"Сфера: {topic}\n"
+            f"Срок: {timeframe}\n"
+            f"Вопрос пользователя: {question_value}\n\n"
+            "Расклад/позиции:\n"
+            f"{spread_text}\n\n"
+            "Выпавшие карты:\n"
+            f"{cards_text}\n\n"
+            "Ответ дай структурой:\n"
+            "а) краткий вывод (2–4 предложения),\n"
+            "б) трактовка по позициям,\n"
+            "в) совет/рекомендации,\n"
+            "г) предупреждение: «это не замена психологу/врачу» (коротко, без морали)."
+        )
+
+    @staticmethod
+    def _extract_tarot_spread_cards_count(spread_text: str) -> int:
+        match = re.search(r"\((\d+)\s*карт", spread_text, re.IGNORECASE)
+        if not match:
+            return 5
+        try:
+            value = int(match.group(1))
+        except ValueError:
+            return 5
+        return value if 3 <= value <= 7 else 5
+
+    @staticmethod
+    def _parse_tarot_cards(text: str) -> list[dict[str, str]] | None:
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        if not lines:
+            return None
+
+        pattern = re.compile(r"^\\s*(\\d+)[\\).\\-]?\\s*(.+?)\\s*\\(([^)]+)\\)\\s*$", re.IGNORECASE)
+        cards: list[dict[str, str]] = []
+
+        for line in lines:
+            if line in {"...", "…"}:
+                continue
+            match = pattern.match(line)
+            if not match:
+                return None
+            name = match.group(2).strip()
+            orientation_raw = match.group(3).strip().lower()
+            if "прям" in orientation_raw:
+                orientation = "прямая"
+            elif "перев" in orientation_raw or "обрат" in orientation_raw or "revers" in orientation_raw:
+                orientation = "перевёрнутая"
+            else:
+                return None
+            if not name:
+                return None
+            cards.append({"name": name, "orientation": orientation})
+
+        return cards or None
+
+    def _check_tarot_mode_limit(self, session: TgSession, user: User, chat_id: int) -> bool:
+        today = datetime.now().strftime("%Y-%m-%d")
+        used_today = self.storage.count_tarot_mode_for_date(user.chat_id, today)
+        limit = self.TAROT_MODE_PAID_DAILY_LIMIT if user.subscription == "paid" else self.TAROT_MODE_FREE_DAILY_LIMIT
+        if used_today < limit:
+            return True
+
+        if user.subscription == "paid":
+            message = "На сегодня лимит режима таролога — 5 раскладов. Попробуй завтра."
+        else:
+            message = "На сегодня лимит режима таролога — 1 расклад. Попробуй завтра."
+
+        self.send_message(chat_id, message, [["В меню"]])
+        self._reset_tarot_mode_session(session)
+        session.state = "main_menu"
+        return False
+
+    @staticmethod
+    def _reset_tarot_mode_session(session: TgSession) -> None:
+        session.data = session.data or {}
+        keys = [key for key in session.data.keys() if key.startswith("tarot_mode_")]
+        for key in keys:
+            session.data.pop(key, None)
 
     def shorten(self, text: str, limit: int = 200) -> str:
         return text if len(text) <= limit else f"{text[:limit]}..."
