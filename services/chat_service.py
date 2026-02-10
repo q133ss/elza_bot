@@ -1261,24 +1261,70 @@ class ChatService:
         if not lines:
             return None
 
-        pattern = re.compile(r"^\\s*(\\d+)[\\).\\-]?\\s*(.+?)\\s*\\(([^)]+)\\)\\s*$", re.IGNORECASE)
         cards: list[dict[str, str]] = []
+        placeholders = {
+            "пустая",
+            "пусто",
+            "пустая карта",
+            "пропуск",
+            "пропуск карты",
+            "нет карты",
+            "нет",
+            "-",
+        }
+        pattern_paren = re.compile(r"^(.+?)\s*\(([^)]+)\)\s*$", re.IGNORECASE)
+        pattern_dash = re.compile(r"^(.+?)\s*[-–—]\s*(.+)$", re.IGNORECASE)
+        orientation_re = re.compile(
+            r"\b(" + "прям" + r"\w*|"
+            + "перев" + r"\w*|"
+            + "обрат" + r"\w*|revers\w*)\b",
+            re.IGNORECASE,
+        )
 
         for line in lines:
             if line in {"...", "…"}:
                 continue
-            match = pattern.match(line)
-            if not match:
-                return None
-            name = match.group(2).strip()
-            orientation_raw = match.group(3).strip().lower()
-            if "прям" in orientation_raw:
-                orientation = "прямая"
-            elif "перев" in orientation_raw or "обрат" in orientation_raw or "revers" in orientation_raw:
-                orientation = "перевёрнутая"
+            cleaned = " ".join(line.split()).strip()
+            cleaned = re.sub(r"^\d+[\).\-\s]*", "", cleaned).strip()
+            if not cleaned:
+                continue
+            if cleaned.lower() in placeholders:
+                cards.append({"name": "пустая карта", "orientation": "прямая"})
+                continue
+
+            name: str | None = None
+            orientation_raw: str | None = None
+
+            match = pattern_paren.match(cleaned)
+            if match:
+                name = match.group(1).strip()
+                orientation_raw = match.group(2).strip()
             else:
+                match = pattern_dash.match(cleaned)
+                if match:
+                    name = match.group(1).strip()
+                    orientation_raw = match.group(2).strip()
+                else:
+                    match = orientation_re.search(cleaned)
+                    if match:
+                        orientation_raw = match.group(1).strip()
+                        name = (cleaned[: match.start()] + cleaned[match.end() :]).strip(" -")
+
+            if not name or not orientation_raw:
                 return None
-            if not name:
+            if name.lower() in placeholders:
+                continue
+
+            orientation_raw = orientation_raw.lower()
+            if "\u043f\u0440\u044f\u043c" in orientation_raw:
+                orientation = "\u043f\u0440\u044f\u043c\u0430\u044f"
+            elif (
+                "\u043f\u0435\u0440\u0435\u0432" in orientation_raw
+                or "\u043e\u0431\u0440\u0430\u0442" in orientation_raw
+                or "revers" in orientation_raw
+            ):
+                orientation = "\u043f\u0435\u0440\u0435\u0432\u0451\u0440\u043d\u0443\u0442\u0430\u044f"
+            else:
                 return None
             cards.append({"name": name, "orientation": orientation})
 
